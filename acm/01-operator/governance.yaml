@@ -9,6 +9,30 @@ metadata:
   name: falcon-governance
   labels:
     app.kubernetes.io/part-of: crowdstrike-falcon
+
+    # THIS IS WHAT GRANTS ARGO CD ACCESS TO THIS NAMESPACE.
+    #
+    # Without it you get, on every object below:
+    #   policies.policy.open-cluster-management.io "falcon-operator" is
+    #   forbidden: User "system:serviceaccount:openshift-gitops:
+    #   openshift-gitops-argocd-application-controller" cannot patch
+    #   resource "policies" ... in the namespace "falcon-governance"
+    #
+    # The OpenShift GitOps operator watches for this label and reconciles a
+    # Role + RoleBinding into the namespace giving that Argo CD instance's
+    # application-controller full rights here. Every object in all three
+    # phases is namespaced in falcon-governance, so this one label covers
+    # the whole repo -- no ClusterRole required.
+    #
+    # The value is the NAMESPACE OF YOUR ARGO CD INSTANCE, not its name.
+    # Change it if you do not use the default openshift-gitops instance.
+    argocd.argoproj.io/managed-by: openshift-gitops
+  annotations:
+    # Create and label the namespace before anything that goes in it, so
+    # the GitOps operator has a chance to provision the RoleBinding first.
+    # Argo retries on failure anyway, so a lost race self-heals -- this
+    # just avoids a confusing red sync on the first pass.
+    argocd.argoproj.io/sync-wave: "-2"
 ---
 # Binds the "global" ManagedClusterSet into the governance namespace.
 #
@@ -16,10 +40,18 @@ metadata:
 # including the hub's own "local-cluster". Without this binding the
 # Placements have no clusters to choose from and silently match zero
 # clusters -- no error, just nothing happening.
+#
+# This is the ONE object the managed-by label may not be enough for. ACM
+# additionally requires the "bind" verb on the target ManagedClusterSet,
+# which is a cluster-scoped subresource and cannot be granted by a
+# namespace Role. If this object alone fails to apply, see
+# prereqs/README.md.
 apiVersion: cluster.open-cluster-management.io/v1beta2
 kind: ManagedClusterSetBinding
 metadata:
   name: global
   namespace: falcon-governance
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
 spec:
   clusterSet: global

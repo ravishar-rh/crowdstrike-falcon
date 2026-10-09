@@ -1,15 +1,55 @@
 ---
-# Grants the openshift-gitops Argo CD controller the rights to manage ACM
-# governance objects. Out of the box it cannot touch them, and the Application
-# fails with "policies.policy.open-cluster-management.io is forbidden".
+# FALLBACK ONLY -- try without this first.
 #
-# Apply this once, by hand or from a cluster-bootstrap repo -- it is a
-# prerequisite for the Application, so it cannot be managed by the Application.
+# Phase 1 labels the falcon-governance namespace with
+# argocd.argoproj.io/managed-by, which makes the OpenShift GitOps operator
+# grant Argo CD full rights inside that namespace. Every Policy, PolicySet,
+# PlacementBinding and Placement in this repo is namespaced there, so that
+# label alone normally resolves the "cannot patch resource" errors with no
+# ClusterRole at all.
+#
+# Apply this only if something still fails after phase 1 has synced once.
+#
+# Two reasons it might:
+#
+# 1. managedclustersets/bind. ACM requires the "bind" verb on the target
+#    ManagedClusterSet to create a ManagedClusterSetBinding. ManagedClusterSet
+#    is cluster-scoped, so a namespace Role cannot grant it. This is the
+#    usual remaining gap, and the first rule below is the whole fix.
+#
+# 2. Your Argo CD instance is not the default openshift-gitops one, or the
+#    managed-by label was stripped by a namespace-governance policy.
+#
+# WHY THIS IS NOT IN THE SYNCED TREE
+# ----------------------------------
+# It cannot be. Kubernetes RBAC forbids privilege escalation: to create a
+# ClusterRole granting permissions, you must already hold those permissions
+# or have the "escalate" verb. An Argo CD that cannot patch policies also
+# cannot create a ClusterRole that lets it patch policies -- the API server
+# rejects it with "attempt to grant extra privileges". Self-bootstrapping
+# RBAC is impossible by design, which is exactly the property that makes
+# RBAC worth anything.
+#
+# Apply it with an account that is already cluster-admin:
+#   oc apply -f prereqs/openshift-gitops-acm-rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: openshift-gitops-acm-governance
 rules:
+  # The one thing a namespace Role cannot cover. Scoped to the single
+  # ManagedClusterSet this repo binds.
+  - apiGroups:
+      - cluster.open-cluster-management.io
+    resources:
+      - managedclustersets/bind
+    resourceNames:
+      - global
+    verbs: ["create"]
+
+  # Belt and braces for case 2 above -- harmless when the managed-by label
+  # is already doing the work, since these duplicate what the namespace
+  # Role grants.
   - apiGroups:
       - policy.open-cluster-management.io
     resources:
@@ -23,16 +63,6 @@ rules:
       - placements
       - managedclustersetbindings
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Creating a ManagedClusterSetBinding additionally requires the "bind" verb
-  # on the ManagedClusterSet itself. This is a virtual subresource -- the
-  # rule above is not sufficient on its own.
-  - apiGroups:
-      - cluster.open-cluster-management.io
-    resources:
-      - managedclustersets/bind
-    resourceNames:
-      - global
-    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
