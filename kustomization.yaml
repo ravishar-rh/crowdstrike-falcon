@@ -1,0 +1,20 @@
+---
+# Root kustomization, so this directory is a valid Argo CD source as-is.
+#
+# Drop this repo under your app-of-apps `sources/` tree and point the
+# generated Application at either this directory or `acm/` -- both render the
+# same objects.
+#
+# Why it exists: without a kustomization.yaml at the path root, Argo falls
+# back to plain directory mode. With `recurse: true` that would sweep up
+# acm/policies/optional/ and apply the KAC and Image Analyzer policies that
+# are meant to be opt-in. Having this file forces kustomize mode, where
+# nothing is applied unless it is listed as a resource.
+#
+# Everything outside acm/ -- terraform/, scripts/, docs/, prereqs/ -- is
+# deliberately not referenced and will never be applied to a cluster.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - acm

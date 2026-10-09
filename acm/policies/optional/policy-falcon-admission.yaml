@@ -1,0 +1,95 @@
+---
+# OPTIONAL: Falcon Kubernetes Admission Controller (KAC).
+#
+# Not part of the default PolicySet. To enable, uncomment falcon-admission in
+# acm/base/policyset.yaml and add this file to acm/kustomization.yaml.
+#
+# FalconAdmission is cluster-scoped. It supports spec.falcon.tags the same way
+# the node sensor does, so KAC shows up in the Falcon console with the same
+# grouping tags as the hosts in that cluster.
+#
+# API scopes: same as the node sensor -- "Falcon Images Download: Read" and
+# "Sensor Download: Read". No extra scope is needed.
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: falcon-admission
+  namespace: falcon-governance
+  annotations:
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-7 Least Functionality
+spec:
+  disabled: false
+  remediationAction: enforce
+  dependencies:
+    - apiVersion: policy.open-cluster-management.io/v1
+      kind: Policy
+      name: falcon-credentials
+      namespace: falcon-governance
+      compliance: Compliant
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: falcon-admission
+        spec:
+          remediationAction: enforce
+          severity: high
+          pruneObjectBehavior: None
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: falcon-kac
+                  labels:
+                    app.kubernetes.io/part-of: crowdstrike-falcon
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: falcon.crowdstrike.com/v1alpha1
+                kind: FalconAdmission
+                metadata:
+                  name: falcon-kac
+                spec:
+                  installNamespace: falcon-kac
+                  clusterName: '{{hub .ManagedClusterName hub}}'
+                  falconSecret:
+                    enabled: true
+                    namespace: falcon-operator
+                    secretName: falcon-api-credentials
+                  falcon_api:
+                    cloud_region: autodiscover
+                  registry:
+                    # Mirror the KAC image into the OpenShift internal
+                    # registry rather than pulling from CrowdStrike on every
+                    # node. Requires the internal registry to be enabled --
+                    # on some ROSA/HCP configurations it is not, in which case
+                    # use type: crowdstrike and an image pull secret.
+                    type: openshift
+                  falcon:
+                    tags:
+                      - platform/openshift
+                      - managed-by/falcon-operator
+                      - cluster/{{hub .ManagedClusterName hub}}
+                      - env/{{hub (index .ManagedClusterLabels "env" | default "unlabeled" | replace "." "-") hub}}
+                      - component/kac
+                  admissionConfig:
+                    # Ignore, not Fail. With Fail, a KAC outage blocks every
+                    # pod admission on the cluster, including the pods that
+                    # would recover KAC. Move to Fail only after you have run
+                    # it in Ignore long enough to trust it.
+                    failurePolicy: Ignore
+                    replicas: 2
+                    disabledNamespaces:
+                      namespaces:
+                        - kube-system
+                        - kube-public
+                        - openshift-etcd
+                        - openshift-apiserver
+                        - openshift-kube-apiserver
+                        - falcon-operator
+                        - falcon-system
+                        - falcon-kac

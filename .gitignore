@@ -1,0 +1,33 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+# Variable files may contain the Falcon client ID/secret when
+# manage_secret_value = true. The .example file is tracked.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Terraform may write sensitive values here
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Local credential scratch
+*.pem
+*.key
+.env
+.envrc
+
+# macOS / editors
+.DS_Store
+*.swp
+.idea/
+.vscode/

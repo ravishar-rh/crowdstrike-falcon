@@ -1,0 +1,156 @@
+---
+# Installs the Red Hat certified CrowdStrike Falcon Platform Operator,
+# hard-pinned to v1.15.0.
+#
+# Verified against the certified bundle at
+# redhat-openshift-ecosystem/certified-operators/operators/falcon-operator/1.15.0:
+#   package                      falcon-operator
+#   default channel              certified-1.0
+#   CSV                          falcon-operator.v1.15.0  (replaces v1.14.0)
+#   com.redhat.openshift.versions "v4.12"  -> 4.12 and later, no upper bound,
+#                                            so OpenShift 4.22 is in scope
+#   installModes                 AllNamespaces ONLY
+#
+# Uses OperatorPolicy (policy.open-cluster-management.io/v1beta1), which is
+# the purpose-built kind for OLM operators -- tech preview in RHACM 2.10, GA
+# in 2.11, and the right tool on a 2.17 hub. It owns the Subscription, the
+# OperatorGroup and InstallPlan approval as one unit, and reports operator
+# health natively. Doing this with raw ConfigurationPolicy means hand-rolling
+# InstallPlan approval with a lookup/range template, which is more code for
+# strictly less behaviour.
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: falcon-operator
+  namespace: falcon-governance
+  annotations:
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/categories: SI System and Information Integrity
+    policy.open-cluster-management.io/controls: SI-3 Malicious Code Protection
+spec:
+  disabled: false
+  remediationAction: enforce
+  policy-templates:
+    # ---------------------------------------------------------------
+    # 1. Namespaces
+    # ---------------------------------------------------------------
+    # OperatorPolicy does not create the namespaces, and the sensor namespace
+    # needs Pod Security labels regardless.
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: falcon-operator-namespaces
+        spec:
+          remediationAction: enforce
+          severity: high
+          # Never let policy removal delete these namespaces -- that would
+          # take the sensor off every node.
+          pruneObjectBehavior: None
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: falcon-operator
+                  labels:
+                    app.kubernetes.io/part-of: crowdstrike-falcon
+                    openshift.io/cluster-monitoring: "true"
+            # The sensor namespace is pre-created here rather than left to the
+            # operator. The operator creates it with no labels at all, and the
+            # node sensor needs the privileged Pod Security profile. Creating
+            # it up front with the labels set -- and with label sync disabled
+            # so OpenShift does not overwrite them -- makes the outcome
+            # deterministic instead of depending on SCC-to-PSA autosync timing.
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: falcon-system
+                  labels:
+                    app.kubernetes.io/part-of: crowdstrike-falcon
+                    pod-security.kubernetes.io/enforce: privileged
+                    pod-security.kubernetes.io/audit: privileged
+                    pod-security.kubernetes.io/warn: privileged
+                    security.openshift.io/scc.podSecurityLabelSync: "false"
+
+    # ---------------------------------------------------------------
+    # 2. The operator itself
+    # ---------------------------------------------------------------
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1beta1
+        kind: OperatorPolicy
+        metadata:
+          name: falcon-operator
+        spec:
+          remediationAction: enforce
+          severity: high
+          complianceType: musthave
+
+          # THE VERSION PIN. Three settings act together:
+          #   versions            only this CSV is approved (enforce) and
+          #                       considered compliant (inform)
+          #   upgradeApproval     None = never approve an *upgrade*
+          #                       InstallPlan. The initial install is still
+          #                       approved, which is what makes day-one work
+          #                       without a human.
+          #   startingCSV         without it OLM builds the first InstallPlan
+          #                       for the channel head. If the head ever moves
+          #                       past 1.15.0 that plan would never be
+          #                       approved and the install would wedge.
+          #
+          # To move to a new version, change all three CSV references in one
+          # commit.
+          upgradeApproval: None
+          versions:
+            - falcon-operator.v1.15.0
+
+          operatorGroup:
+            name: falcon-operator
+            namespace: falcon-operator
+            # No targetNamespaces on purpose. The bundle supports the
+            # AllNamespaces install mode ONLY, which is expressed as an
+            # OperatorGroup with an empty spec. Adding targetNamespaces makes
+            # OLM refuse the CSV with "no operator group found that is
+            # managing this namespace".
+
+          subscription:
+            name: falcon-operator
+            namespace: falcon-operator
+            channel: certified-1.0
+            source: certified-operators
+            sourceNamespace: openshift-marketplace
+            startingCSV: falcon-operator.v1.15.0
+            installPlanApproval: Manual
+
+          # How operator conditions map to policy compliance.
+          #
+          # These are the defaults, written out because the choice is load
+          # bearing: falcon-credentials and falcon-node-sensor both declare
+          # spec.dependencies on THIS policy being Compliant. When a
+          # dependency goes NonCompliant, ACM moves the dependents to Pending
+          # and withdraws their templates from the cluster. Objects already
+          # created survive (every ConfigurationPolicy here sets
+          # pruneObjectBehavior: None, so the sensor keeps running), but
+          # enforcement pauses until this clears.
+          #
+          # So do not tighten these casually. In particular leaving
+          # upgradesAvailable: Compliant is deliberate -- otherwise the day
+          # CrowdStrike publishes v1.16.0 the whole stack would go
+          # NonCompliant and stop reconciling, purely because an upgrade
+          # exists. Watch for available upgrades in the ACM console or the
+          # policy status instead.
+          complianceConfig:
+            upgradesAvailable: Compliant
+            catalogSourceUnhealthy: Compliant
+            deprecationsPresent: Compliant
+            # The one that should fail loudly: the operator is installed but
+            # its deployment is not running.
+            deploymentsUnavailable: NonCompliant
+
+          # removalBehavior is intentionally left at its defaults. It only
+          # applies when complianceType is mustnothave, i.e. when you have
+          # deliberately asked for an uninstall. Deleting this Policy does
+          # not trigger it. See docs/runbook.md for the uninstall path.

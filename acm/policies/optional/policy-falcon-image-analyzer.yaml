@@ -1,0 +1,78 @@
+---
+# OPTIONAL: Falcon Image Assessment at Runtime (IAR).
+#
+# Not part of the default PolicySet. To enable, uncomment
+# falcon-image-analyzer in acm/base/policyset.yaml and add this file to
+# acm/kustomization.yaml.
+#
+# NOTE ON TAGS: FalconImageAnalyzer has no spec.falcon block in the v1.15.0
+# CRD, so sensor grouping tags do not apply to IAR. Its identity in the
+# console comes from imageAnalyzerConfig.clusterName instead. This is a real
+# asymmetry with FalconNodeSensor and FalconAdmission -- do not try to add a
+# tags field here, the API server will reject it.
+#
+# BEFORE ENABLING: the API client needs "Falcon Container Image: Read/Write"
+# and "Falcon Container CLI: Write".
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: falcon-image-analyzer
+  namespace: falcon-governance
+  annotations:
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/categories: RA Risk Assessment
+    policy.open-cluster-management.io/controls: RA-5 Vulnerability Monitoring
+spec:
+  disabled: false
+  remediationAction: enforce
+  dependencies:
+    - apiVersion: policy.open-cluster-management.io/v1
+      kind: Policy
+      name: falcon-credentials
+      namespace: falcon-governance
+      compliance: Compliant
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: falcon-image-analyzer
+        spec:
+          remediationAction: enforce
+          severity: medium
+          pruneObjectBehavior: None
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: falcon-iar
+                  labels:
+                    app.kubernetes.io/part-of: crowdstrike-falcon
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: falcon.crowdstrike.com/v1alpha1
+                kind: FalconImageAnalyzer
+                metadata:
+                  name: falcon-image-analyzer
+                spec:
+                  installNamespace: falcon-iar
+                  falconSecret:
+                    enabled: true
+                    namespace: falcon-operator
+                    secretName: falcon-api-credentials
+                  falcon_api:
+                    cloud_region: autodiscover
+                  registry:
+                    type: openshift
+                  imageAnalyzerConfig:
+                    clusterName: '{{hub .ManagedClusterName hub}}'
+                    exclusions:
+                      namespaces:
+                        - kube-system
+                        - kube-public
+                        - falcon-operator
+                        - falcon-system
+                        - falcon-kac
+                        - falcon-iar

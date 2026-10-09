@@ -1,0 +1,64 @@
+---
+# Bind the "global" ManagedClusterSet into the governance namespace.
+#
+# The "global" set is created by MCE/ACM and selects *every* ManagedCluster,
+# including the hub's own "local-cluster". Without this binding the Placement
+# below has no clusters to choose from and silently matches zero clusters.
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSetBinding
+metadata:
+  name: global
+  namespace: falcon-governance
+spec:
+  clusterSet: global
+---
+# Selects local-cluster AND every managed OpenShift cluster.
+#
+# "vendor: OpenShift" is a standard label ACM applies to every imported
+# OpenShift cluster, and the hub's local-cluster carries it too, so this one
+# Placement covers the hub and the fleet in a single object.
+#
+# To exclude the hub, add:
+#   - key: local-cluster
+#     operator: NotIn
+#     values: ["true"]
+#
+# To roll out in waves, label clusters (e.g. falcon-wave=1) and add a
+# matchExpressions entry for that label instead.
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: falcon-openshift-clusters
+  namespace: falcon-governance
+spec:
+  clusterSets:
+    - global
+  # Keep placing the policy even when a cluster is temporarily unreachable,
+  # so the sensor config is reasserted the moment the cluster comes back.
+  tolerations:
+    - key: cluster.open-cluster-management.io/unreachable
+      operator: Exists
+    - key: cluster.open-cluster-management.io/unavailable
+      operator: Exists
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: vendor
+              operator: In
+              values:
+                - OpenShift
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: falcon-platform
+  namespace: falcon-governance
+placementRef:
+  name: falcon-openshift-clusters
+  apiGroup: cluster.open-cluster-management.io
+  kind: Placement
+subjects:
+  - name: falcon-platform
+    apiGroup: policy.open-cluster-management.io
+    kind: PolicySet

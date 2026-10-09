@@ -1,0 +1,163 @@
+---
+# The FalconNodeSensor DaemonSet, with per-cluster sensor grouping tags.
+#
+# FalconNodeSensor is CLUSTER-SCOPED (scope: Cluster in the v1.15.0 CRD), so
+# there is no metadata.namespace here. Where the DaemonSet lands is controlled
+# by spec.installNamespace.
+#
+# READ docs/sensor-tags.md BEFORE CHANGING THE TAG LIST. Short version:
+#   - spec.falcon.tags is an ARRAY of strings, not a comma-separated string.
+#   - The operator joins the array with commas into FALCONCTL_OPT_TAGS, which
+#     the sensor container consumes at init -- the same mechanism as the
+#     --tags parameter on the Linux/PowerShell installer scripts.
+#   - Allowed characters: alphanumerics, '/', '-', '_'. A '.' or a space in a
+#     tag is rejected. Several ACM cluster labels contain dots, so values
+#     pulled from labels are passed through `replace "." "-"`.
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: falcon-node-sensor
+  namespace: falcon-governance
+  annotations:
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/categories: SI System and Information Integrity
+    policy.open-cluster-management.io/controls: SI-3 Malicious Code Protection
+spec:
+  disabled: false
+  remediationAction: enforce
+  dependencies:
+    - apiVersion: policy.open-cluster-management.io/v1
+      kind: Policy
+      name: falcon-credentials
+      namespace: falcon-governance
+      compliance: Compliant
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: falcon-node-sensor
+        spec:
+          remediationAction: enforce
+          severity: high
+          # Deliberately None. DeleteIfCreated would mean an accidental
+          # PolicySet edit silently uninstalls EDR fleet-wide. Removing the
+          # sensor should be an explicit, separate action.
+          pruneObjectBehavior: None
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: falcon.crowdstrike.com/v1alpha1
+                kind: FalconNodeSensor
+                metadata:
+                  name: falcon-node-sensor
+                spec:
+                  installNamespace: falcon-system
+
+                  # Credentials come from the ESO-managed Secret. With this
+                  # enabled, client_id/client_secret are omitted from
+                  # falcon_api below -- but the falcon_api block itself must
+                  # still be present, because the operator dereferences
+                  # spec.falcon_api to build its CrowdStrike API client.
+                  falconSecret:
+                    enabled: true
+                    namespace: falcon-operator
+                    secretName: falcon-api-credentials
+
+                  falcon_api:
+                    cloud_region: autodiscover
+
+                  falcon:
+                    # ---------------- SENSOR GROUPING TAGS ----------------
+                    # Resolved per-cluster on the hub at propagation time.
+                    # local-cluster gets cluster/local-cluster, each spoke
+                    # gets its own ManagedCluster name.
+                    tags:
+                      - platform/openshift
+                      - managed-by/falcon-operator
+                      - cluster/{{hub .ManagedClusterName hub}}
+                      # ManagedCluster labels. `default` keeps a missing label
+                      # from producing an empty tag; `replace` strips dots,
+                      # which Falcon rejects.
+                      - env/{{hub (index .ManagedClusterLabels "env" | default "unlabeled" | replace "." "-") hub}}
+                      - region/{{hub (index .ManagedClusterLabels "region" | default "unknown" | replace "." "-") hub}}
+                      # ACM sets openshiftVersion-major-minor to e.g. "4.22",
+                      # which becomes ocp/4-22.
+                      - ocp/{{hub (index .ManagedClusterLabels "openshiftVersion-major-minor" | default "unknown" | replace "." "-") hub}}
+
+                    # No provisioning_token key anywhere, per security team
+                    # standard. The operator only reads it when present.
+
+                    trace: none
+
+                  node:
+                    imagePullPolicy: Always
+                    terminationGracePeriod: 60
+
+                    # Cover control-plane and infra nodes as well as workers.
+                    # These match the operator's own defaults; they are spelled
+                    # out so the intent survives a future default change.
+                    #
+                    # READ THIS BEFORE DEPLOYING TO ROSA CLASSIC, ARO, OSD OR
+                    # RHOIC. On those managed services Red Hat does not support
+                    # customer workloads on control plane or infra nodes, and
+                    # running the sensor there may void the availability SLA.
+                    # CrowdStrike's guidance is to either accept that gap by
+                    # setting `tolerations: []` (worker nodes only), or keep
+                    # full coverage and file a support exception with your
+                    # Red Hat account team.
+                    # https://access.redhat.com/solutions/6972101
+                    #
+                    # Not applicable to self-managed OpenShift (sensor is
+                    # supported on all node types) or to ROSA HCP (no customer
+                    # access to the control plane at all).
+                    #
+                    # If your fleet is mixed, split this into two policies with
+                    # different Placements rather than weakening it globally.
+                    tolerations:
+                      - key: node-role.kubernetes.io/master
+                        operator: Exists
+                        effect: NoSchedule
+                      - key: node-role.kubernetes.io/control-plane
+                        operator: Exists
+                        effect: NoSchedule
+                      - key: node-role.kubernetes.io/infra
+                        operator: Exists
+                        effect: NoSchedule
+
+                    updateStrategy:
+                      type: RollingUpdate
+                      rollingUpdate:
+                        maxUnavailable: 1
+
+                    advanced:
+                      # "normal" = reconcile when CrowdStrike publishes a new
+                      # sensor build. Alternatives:
+                      #   "off"            pin forever (set node.version too)
+                      #   updatePolicy: X  defer to a Sensor Update Policy
+                      #                    configured in the Falcon console,
+                      #                    which is usually what a security
+                      #                    team wants to own centrally.
+                      autoUpdate: normal
+                      # updatePolicy: "OpenShift Production"
+
+                    # Pin a specific sensor build instead of auto-updating:
+                    # version: "7.40"
+
+    # Reports whether the DaemonSet actually rolled out. inform only.
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: falcon-node-sensor-ready
+        spec:
+          remediationAction: inform
+          severity: high
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: apps/v1
+                kind: DaemonSet
+                metadata:
+                  name: falcon-node-sensor
+                  namespace: falcon-system

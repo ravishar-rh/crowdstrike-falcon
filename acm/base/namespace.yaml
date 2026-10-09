@@ -1,0 +1,13 @@
+---
+# Hub-only namespace that holds the Falcon governance artifacts:
+# Policies, Placement, PlacementBinding, the AWS config ConfigMap, and
+# (only in the hub-templated credential variant) the ESO-synced Secret.
+#
+# ACM restricts hub template lookups to the namespace the Policy lives in,
+# so every object referenced by a {{hub ... hub}} template must be here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: falcon-governance
+  labels:
+    app.kubernetes.io/part-of: crowdstrike-falcon
