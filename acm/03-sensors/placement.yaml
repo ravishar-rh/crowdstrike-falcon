@@ -1,0 +1,66 @@
+---
+# Which clusters actually run the sensor DaemonSet.
+#
+# This is the Placement to narrow for a staged rollout. Label a pilot group
+# and add a predicate, e.g.:
+#
+#   - key: falcon-wave
+#     operator: In
+#     values: ["1"]
+#
+# Phases 1 and 2 can stay fleet-wide while this one is restricted; the
+# operator and credentials are harmless without a sensor CR.
+#
+# Assumes acm/01-operator is already deployed: the falcon-governance
+# namespace and the "global" ManagedClusterSetBinding come from there.
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: falcon-sensors-clusters
+  namespace: falcon-governance
+spec:
+  clusterSets:
+    - global
+  tolerations:
+    - key: cluster.open-cluster-management.io/unreachable
+      operator: Exists
+    - key: cluster.open-cluster-management.io/unavailable
+      operator: Exists
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: vendor
+              operator: In
+              values:
+                - OpenShift
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: falcon-platform-sensors
+  namespace: falcon-governance
+placementRef:
+  name: falcon-sensors-clusters
+  apiGroup: cluster.open-cluster-management.io
+  kind: Placement
+subjects:
+  - name: falcon-platform-sensors
+    apiGroup: policy.open-cluster-management.io
+    kind: PolicySet
+---
+apiVersion: policy.open-cluster-management.io/v1beta1
+kind: PolicySet
+metadata:
+  name: falcon-platform-sensors
+  namespace: falcon-governance
+spec:
+  description: >-
+    Phase 3 -- FalconNodeSensor DaemonSet with per-cluster grouping tags,
+    plus the optional admission controller and image analyzer.
+  policies:
+    - falcon-node-sensor
+    # Optional add-ons. Uncomment here AND in kustomization.yaml -- the two
+    # lists must agree or the policy is created but placed nowhere.
+    # - falcon-admission
+    # - falcon-image-analyzer

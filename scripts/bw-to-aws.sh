@@ -85,7 +85,7 @@ payload_file="$(mktemp "${TMPDIR:-/tmp}/falcon-cred.XXXXXX")"
 trap 'rm -f "$payload_file"' EXIT INT TERM
 
 # Key names here must match the `property:` values in the ExternalSecret in
-# acm/policies/policy-falcon-credentials.yaml.
+# acm/02-credentials/external-secrets.yaml.
 jq -n --arg id "$client_id" --arg secret "$client_secret" \
   '{client_id: $id, client_secret: $secret}' >"$payload_file"
 

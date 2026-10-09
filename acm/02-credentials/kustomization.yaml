@@ -1,0 +1,31 @@
+---
+# PHASE 2 -- Falcon API credentials.
+#
+# NOT zero-touch. Before deploying this phase you must have:
+#   1. run terraform/ to create the AWS secret and the hub IAM role
+#   2. written the real credential with scripts/bw-to-aws.sh
+#   3. filled the three AWS values into external-secrets.yaml
+#      (terraform -chdir=terraform output hub_secret_store_values)
+#   4. External Secrets Operator running on the ACM hub
+#
+# Deploy as its own Argo CD Application pointing at this directory.
+#
+# Deploying it early is safe but pointless: the ExternalSecret will sit in
+# SecretSyncedError against the placeholder role ARN, and the policy
+# declares a dependency on phase 1 so it reports Pending until the operator
+# is Compliant.
+#
+# See docs/credentials.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - external-secrets.yaml
+  - placement.yaml
+  - policy-falcon-credentials.yaml
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: crowdstrike-falcon
+      app.kubernetes.io/component: credentials

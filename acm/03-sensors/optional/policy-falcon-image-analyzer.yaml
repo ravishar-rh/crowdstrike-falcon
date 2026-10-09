@@ -2,8 +2,8 @@
 # OPTIONAL: Falcon Image Assessment at Runtime (IAR).
 #
 # Not part of the default PolicySet. To enable, uncomment
-# falcon-image-analyzer in acm/base/policyset.yaml and add this file to
-# acm/kustomization.yaml.
+# falcon-image-analyzer in the PolicySet in acm/03-sensors/placement.yaml and add this file to
+# acm/03-sensors/kustomization.yaml.
 #
 # NOTE ON TAGS: FalconImageAnalyzer has no spec.falcon block in the v1.15.0
 # CRD, so sensor grouping tags do not apply to IAR. Its identity in the

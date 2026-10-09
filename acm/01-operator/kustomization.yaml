@@ -1,0 +1,22 @@
+---
+# PHASE 1 -- operator only. This is the drop-in.
+#
+# Self-contained and zero-touch: no AWS, no credentials, no Terraform, no
+# custom resources. Drop it in your app-of-apps and the Red Hat certified
+# Falcon Platform Operator v1.15.0 installs itself on local-cluster and
+# every managed OpenShift cluster.
+#
+# Nothing in this phase needs a value filled in first.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - governance.yaml
+  - placement.yaml
+  - policy-falcon-operator.yaml
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: crowdstrike-falcon
+      app.kubernetes.io/component: operator

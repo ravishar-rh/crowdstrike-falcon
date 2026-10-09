@@ -1,20 +1,27 @@
 ---
-# Root kustomization, so this directory is a valid Argo CD source as-is.
+# Root kustomization = PHASE 1 ONLY (the operator).
 #
-# Drop this repo under your app-of-apps `sources/` tree and point the
-# generated Application at either this directory or `acm/` -- both render the
-# same objects.
+# Drop this repo under your app-of-apps `sources/` tree, add your gate file,
+# and point the generated Application here. The operator installs on
+# local-cluster and every managed OpenShift cluster with nothing else to
+# configure -- no AWS, no credentials, no Terraform.
 #
-# Why it exists: without a kustomization.yaml at the path root, Argo falls
-# back to plain directory mode. With `recurse: true` that would sweep up
-# acm/policies/optional/ and apply the KAC and Image Analyzer policies that
-# are meant to be opt-in. Having this file forces kustomize mode, where
-# nothing is applied unless it is listed as a resource.
+# Later phases are deliberately NOT included. Add them when you are ready,
+# each as its own Application pointing at its own directory:
 #
-# Everything outside acm/ -- terraform/, scripts/, docs/, prereqs/ -- is
-# deliberately not referenced and will never be applied to a cluster.
+#   acm/01-operator      the operator            (this, no prerequisites)
+#   acm/02-credentials   Falcon API credentials  (needs AWS + Terraform)
+#   acm/03-sensors       FalconNodeSensor + tags (needs phase 2)
+#
+# Phases 2 and 3 declare ACM policy dependencies on the phase before them,
+# so they sit Pending rather than failing if applied early.
+#
+# Why this file exists at all: without a kustomization.yaml at the path
+# root, Argo falls back to plain directory mode, and with `recurse: true`
+# that would sweep up every phase at once -- including credential manifests
+# that still have placeholder values.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - acm
+  - acm/01-operator

@@ -132,7 +132,7 @@ console and in host group rules. This repo uses `prefix/value` throughout.
 The useful trick: ACM resolves `{{hub ... hub}}` templates separately for each
 target cluster, so one policy produces a different tag set per cluster.
 
-From `acm/policies/policy-falcon-node-sensor.yaml`:
+From `acm/03-sensors/policy-falcon-node-sensor.yaml`:
 
 ```yaml
 tags:

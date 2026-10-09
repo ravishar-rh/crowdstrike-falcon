@@ -2,7 +2,7 @@
 # OPTIONAL: Falcon Kubernetes Admission Controller (KAC).
 #
 # Not part of the default PolicySet. To enable, uncomment falcon-admission in
-# acm/base/policyset.yaml and add this file to acm/kustomization.yaml.
+# the PolicySet in acm/03-sensors/placement.yaml and add this file to acm/03-sensors/kustomization.yaml.
 #
 # FalconAdmission is cluster-scoped. It supports spec.falcon.tags the same way
 # the node sensor does, so KAC shows up in the Falcon console with the same

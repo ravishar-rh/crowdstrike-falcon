@@ -32,6 +32,35 @@ spec:
       namespace: falcon-governance
       compliance: Compliant
   policy-templates:
+    # The sensor namespace is pre-created here rather than left to the
+    # operator. The operator creates it with no labels at all, and the node
+    # sensor needs the privileged Pod Security profile. Creating it up front
+    # with the labels set -- and with label sync disabled so OpenShift does
+    # not overwrite them -- makes the outcome deterministic instead of
+    # depending on SCC-to-PSA autosync timing.
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: falcon-sensor-namespace
+        spec:
+          remediationAction: enforce
+          severity: high
+          pruneObjectBehavior: None
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: falcon-system
+                  labels:
+                    app.kubernetes.io/part-of: crowdstrike-falcon
+                    pod-security.kubernetes.io/enforce: privileged
+                    pod-security.kubernetes.io/audit: privileged
+                    pod-security.kubernetes.io/warn: privileged
+                    security.openshift.io/scc.podSecurityLabelSync: "false"
+
     - objectDefinition:
         apiVersion: policy.open-cluster-management.io/v1
         kind: ConfigurationPolicy

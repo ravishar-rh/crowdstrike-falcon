@@ -1,0 +1,55 @@
+---
+# Which clusters receive the Falcon API credentials. Matches phase 1 by
+# default -- a cluster with the operator but no credentials cannot run a
+# sensor.
+#
+# Assumes acm/01-operator is already deployed: the falcon-governance
+# namespace and the "global" ManagedClusterSetBinding come from there.
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: falcon-credentials-clusters
+  namespace: falcon-governance
+spec:
+  clusterSets:
+    - global
+  tolerations:
+    - key: cluster.open-cluster-management.io/unreachable
+      operator: Exists
+    - key: cluster.open-cluster-management.io/unavailable
+      operator: Exists
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: vendor
+              operator: In
+              values:
+                - OpenShift
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: falcon-platform-credentials
+  namespace: falcon-governance
+placementRef:
+  name: falcon-credentials-clusters
+  apiGroup: cluster.open-cluster-management.io
+  kind: Placement
+subjects:
+  - name: falcon-platform-credentials
+    apiGroup: policy.open-cluster-management.io
+    kind: PolicySet
+---
+apiVersion: policy.open-cluster-management.io/v1beta1
+kind: PolicySet
+metadata:
+  name: falcon-platform-credentials
+  namespace: falcon-governance
+spec:
+  description: >-
+    Phase 2 -- Falcon API credentials, synced from AWS Secrets Manager by
+    External Secrets Operator on the hub and distributed to the fleet by an
+    ACM hub template.
+  policies:
+    - falcon-credentials

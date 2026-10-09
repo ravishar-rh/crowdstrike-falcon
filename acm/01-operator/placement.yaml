@@ -1,40 +1,29 @@
 ---
-# Bind the "global" ManagedClusterSet into the governance namespace.
-#
-# The "global" set is created by MCE/ACM and selects *every* ManagedCluster,
-# including the hub's own "local-cluster". Without this binding the Placement
-# below has no clusters to choose from and silently matches zero clusters.
-apiVersion: cluster.open-cluster-management.io/v1beta2
-kind: ManagedClusterSetBinding
-metadata:
-  name: global
-  namespace: falcon-governance
-spec:
-  clusterSet: global
----
-# Selects local-cluster AND every managed OpenShift cluster.
+# Where the operator gets installed: local-cluster AND every managed
+# OpenShift cluster.
 #
 # "vendor: OpenShift" is a standard label ACM applies to every imported
 # OpenShift cluster, and the hub's local-cluster carries it too, so this one
-# Placement covers the hub and the fleet in a single object.
+# Placement covers the hub and the fleet.
+#
+# Each phase has its own Placement on purpose. You will very likely want the
+# operator everywhere but sensors on a subset first -- narrow
+# acm/03-sensors/placement.yaml without touching this one.
 #
 # To exclude the hub, add:
 #   - key: local-cluster
 #     operator: NotIn
 #     values: ["true"]
-#
-# To roll out in waves, label clusters (e.g. falcon-wave=1) and add a
-# matchExpressions entry for that label instead.
 apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Placement
 metadata:
-  name: falcon-openshift-clusters
+  name: falcon-operator-clusters
   namespace: falcon-governance
 spec:
   clusterSets:
     - global
   # Keep placing the policy even when a cluster is temporarily unreachable,
-  # so the sensor config is reasserted the moment the cluster comes back.
+  # so the operator is reasserted the moment the cluster comes back.
   tolerations:
     - key: cluster.open-cluster-management.io/unreachable
       operator: Exists
@@ -52,13 +41,26 @@ spec:
 apiVersion: policy.open-cluster-management.io/v1
 kind: PlacementBinding
 metadata:
-  name: falcon-platform
+  name: falcon-platform-operator
   namespace: falcon-governance
 placementRef:
-  name: falcon-openshift-clusters
+  name: falcon-operator-clusters
   apiGroup: cluster.open-cluster-management.io
   kind: Placement
 subjects:
-  - name: falcon-platform
+  - name: falcon-platform-operator
     apiGroup: policy.open-cluster-management.io
     kind: PolicySet
+---
+apiVersion: policy.open-cluster-management.io/v1beta1
+kind: PolicySet
+metadata:
+  name: falcon-platform-operator
+  namespace: falcon-governance
+spec:
+  description: >-
+    Phase 1 -- CrowdStrike Falcon Platform Operator v1.15.0 (Red Hat
+    certified) installed on local-cluster and every managed OpenShift
+    cluster. No credentials and no sensors; this phase stands alone.
+  policies:
+    - falcon-operator

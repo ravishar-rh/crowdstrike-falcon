@@ -71,7 +71,7 @@ Three names have to agree, and nothing will tell you if they do not:
 
 | Name | Set in | Must match |
 |---|---|---|
-| `client_id` / `client_secret` | the JSON above | `remoteRef.property` in `acm/hub/external-secrets.yaml` |
+| `client_id` / `client_secret` | the JSON above | `remoteRef.property` in `acm/02-credentials/external-secrets.yaml` |
 | secret name | Terraform `var.secret_name` | `remoteRef.key` in the same file |
 | `falcon-client-id` / `falcon-client-secret` | `ExternalSecret.spec.data[].secretKey` | **fixed by the operator — do not change** |
 
@@ -88,8 +88,8 @@ falcon-provisioning-token  (unused here)
 
 Rename them and the operator reports missing credentials. The same two key
 names are what the ACM policy templates read on the hub, so they appear in
-both `acm/hub/external-secrets.yaml` and
-`acm/policies/policy-falcon-credentials.yaml`.
+both `acm/02-credentials/external-secrets.yaml` and
+`acm/02-credentials/policy-falcon-credentials.yaml`.
 
 `scripts/validate.sh` compares the manifest against Terraform state when
 state is reachable, so a renamed secret or a rebuilt role fails locally
@@ -120,7 +120,7 @@ trap, so it is never an argv element visible in `ps`.
 
 ## 4. How the credential reaches managed clusters
 
-`acm/policies/policy-falcon-credentials.yaml` carries:
+`acm/02-credentials/policy-falcon-credentials.yaml` carries:
 
 ```yaml
 data:
@@ -198,7 +198,7 @@ images; the running sensor authenticates with its own CID and AID.
 The hub needs External Secrets Operator with its controller ServiceAccount at
 `external-secrets/external-secrets`. Change `eso_namespace` /
 `eso_service_account` in `terraform.tfvars` and the `serviceAccountRef` in
-`acm/hub/external-secrets.yaml` if yours differs — the IAM trust policy pins
+`acm/02-credentials/external-secrets.yaml` if yours differs — the IAM trust policy pins
 that exact ServiceAccount, so the two must agree or
 `AssumeRoleWithWebIdentity` fails with `InvalidIdentityToken`.
 

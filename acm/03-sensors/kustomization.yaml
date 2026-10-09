@@ -1,0 +1,28 @@
+---
+# PHASE 3 -- the sensors.
+#
+# Requires phases 1 and 2. The node sensor policy declares an ACM dependency
+# on falcon-credentials being Compliant, so it reports Pending rather than
+# failing if credentials are not in place yet.
+#
+# Deploy as its own Argo CD Application pointing at this directory.
+#
+# Read docs/sensor-tags.md before changing the tag list, and label your
+# ManagedClusters (env, region) first or every sensor tags as
+# env/unlabeled.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - placement.yaml
+  - policy-falcon-node-sensor.yaml
+  # Optional add-ons -- also uncomment them in placement.yaml's PolicySet.
+  # Widen the Falcon API scopes before enabling the image analyzer.
+  # - optional/policy-falcon-admission.yaml
+  # - optional/policy-falcon-image-analyzer.yaml
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: crowdstrike-falcon
+      app.kubernetes.io/component: sensors

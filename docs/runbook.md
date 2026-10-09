@@ -1,43 +1,86 @@
 # Deployment runbook
 
-Order matters: AWS first, then hub prerequisites, then Git, then Argo.
+Three phases, each an independent Argo CD Application. Phase 1 needs
+nothing but a Git push.
+
+| Phase | Argo source path | Prerequisites |
+|---|---|---|
+| 1 — operator | repo root (or `acm/01-operator`) | none |
+| 2 — credentials | `acm/02-credentials` | Terraform, AWS, ESO on hub |
+| 3 — sensors | `acm/03-sensors` | phase 2 Compliant |
 
 ---
 
 ## 0. Prerequisites
 
-On the ACM hub **only**:
+Phase 1 only needs:
 
-- RHACM 2.17 is what this repo targets. The hard floor is **2.11**, set by
-  `OperatorPolicy` reaching GA (tech preview in 2.10). Other features in use
-  — `.ManagedClusterLabels`, `spec.dependencies`, the propagator's
-  hub-template watches — all predate that.
-- OpenShift GitOps (Argo CD) installed.
-- The `global` ManagedClusterSet exists (default in MCE/ACM).
-- External Secrets Operator, controller SA `external-secrets/external-secrets`.
-- An OIDC issuer registered as an IAM OIDC provider in AWS (ROSA and most
-  OCP-on-AWS installs already have one).
+- **RHACM 2.11+** on the hub (2.17 targeted). The floor is set by
+  `OperatorPolicy` reaching GA; `.ManagedClusterLabels`,
+  `spec.dependencies` and the propagator's hub-template watches all predate
+  it.
+- OpenShift GitOps (Argo CD) on the hub, with rights over ACM governance
+  objects — check with the one-liner in [prereqs/README.md](../prereqs/README.md).
+- The `global` ManagedClusterSet (default in MCE/ACM).
+- Target clusters on **OpenShift 4.12+**. The certified bundle declares
+  `com.redhat.openshift.versions: "v4.12"` with no upper bound, so 4.22 is
+  in scope.
 
-On every targeted cluster, including `local-cluster`:
+Phases 2 and 3 additionally need:
 
-- OpenShift 4.12+ — the certified bundle declares
-  `com.redhat.openshift.versions: "v4.12"` with no upper bound, so 4.22 is in
-  scope.
-- Outbound connectivity to the CrowdStrike cloud. The sensor requires it; a
-  fully air-gapped cluster is out of scope.
+- External Secrets Operator on the hub, controller SA
+  `external-secrets/external-secrets`.
+- The hub's OIDC issuer registered as an IAM OIDC provider in AWS (ROSA and
+  most OCP-on-AWS installs already have one).
+- Outbound connectivity to the CrowdStrike cloud from every cluster running
+  a sensor. A fully air-gapped cluster is out of scope.
 
 Managed clusters need **no** ESO, no IAM role and no route to AWS — they
 receive the credential from the hub through an ACM policy template.
 
-Collect the one input Terraform needs, from the hub:
+---
+
+# PHASE 1 — get the operator running
+
+Nothing to configure. Push the repo into your app-of-apps `sources/` tree,
+add your gate file, and point the generated Application at the **repo
+root**. That renders phase 1 and only phase 1.
+
+Confirm what will be applied before you push:
+
+```bash
+./scripts/validate.sh
+kustomize build .        # 6 hub-side objects, no placeholders
+```
+
+Then verify it landed:
+
+```bash
+# hub
+oc get policy falcon-operator -n falcon-governance
+oc get placementdecision -n falcon-governance -o yaml | grep -A 20 'decisions:'
+
+# any target cluster
+oc get csv -n falcon-operator          # falcon-operator.v1.15.0 -> Succeeded
+oc get sub,ip,og -n falcon-operator    # all created by OperatorPolicy
+```
+
+The operator is now installed and idle on every cluster. It does nothing
+until a Falcon custom resource exists, which is phase 3.
+
+Stop here for as long as you like. Everything below is phase 2 and 3.
+
+---
+
+# PHASE 2 — credentials
+
+Get the hub's OIDC issuer, the one input Terraform needs:
 
 ```bash
 oc get authentication cluster -o jsonpath='{.spec.serviceAccountIssuer}{"\n"}'
 ```
 
----
-
-## 1. AWS
+## 2a. AWS
 
 ```bash
 cd terraform
@@ -63,7 +106,7 @@ Wire the hub manifest to what Terraform built:
 
 ```bash
 terraform -chdir=terraform output hub_secret_store_values
-$EDITOR acm/hub/external-secrets.yaml   # region, role, remoteRef.key
+$EDITOR acm/02-credentials/external-secrets.yaml   # region, role, remoteRef.key
 ./scripts/validate.sh                   # confirms the two now agree
 ```
 
@@ -72,42 +115,42 @@ names, no credential material. Safe to commit.
 
 ---
 
-## 2. Hub RBAC
+## 2b. Deploy phase 2
 
-Argo CD cannot manage ACM governance objects out of the box. This is a
-prerequisite for the Application, so it cannot be managed by the Application:
+Commit, then add a second gate file pointing an Application at
+`acm/02-credentials`.
 
 ```bash
-oc apply -f prereqs/openshift-gitops-acm-rbac.yaml
+./scripts/validate.sh    # cross-checks the manifest against terraform state
+git add -A && git commit -m "Falcon phase 2: credentials" && git push
 ```
 
-Skip it if your platform already grants Argo CD rights over ACM governance
-objects. See [prereqs/README.md](../prereqs/README.md) for what it covers and
-for the `managedclustersets/bind` gotcha.
+Verify ESO populated the source Secret on the hub — everything downstream
+reads from it:
+
+```bash
+oc get externalsecret falcon-api-credentials -n falcon-governance   # SecretSynced
+oc get secret falcon-api-credentials -n falcon-operator             # on a spoke
+```
 
 ---
 
-## 3. Commit into the app-of-apps repo
+# PHASE 3 — sensors
+
+Label your ManagedClusters **first**, or every sensor tags as
+`env/unlabeled`:
 
 ```bash
-./scripts/validate.sh          # catches tag/pin/schema mistakes before the push
-git add -A && git commit -m "CrowdStrike Falcon operator v1.15.0 via ACM" && git push
+oc label managedcluster <name> env=prod region=us-east-1 --overwrite
 ```
 
-Drop the tree under your app-of-apps `sources/` directory and add whatever
-gate file your generator expects. Point the resulting Application at the
-**repo root or `acm/`** — both carry a `kustomization.yaml` and render the
-same ten objects.
+Review the tag list in `acm/03-sensors/policy-falcon-node-sensor.yaml`
+against [sensor-tags.md](sensor-tags.md), decide the control-plane
+tolerations question for ROSA Classic / ARO / OSD, then add a third gate
+file pointing an Application at `acm/03-sensors`.
 
-Do not point it at a parent directory with `recurse: true`. Kustomize mode is
-what keeps `acm/policies/optional/` (KAC, Image Analyzer) from being applied
-before you have widened the Falcon API scopes for them.
-
-Sanity check what will be applied, from the path you are about to configure:
-
-```bash
-kustomize build .      # or: kustomize build acm/
-```
+To pilot before going fleet-wide, narrow the Placement in
+`acm/03-sensors/placement.yaml` — phases 1 and 2 can stay everywhere.
 
 ---
 
@@ -262,7 +305,7 @@ Policy, PolicySet and Placement; add any further noisy path to
 | Tags for the whole fleet | edit `spec.falcon.tags` in the node sensor policy; the DaemonSet rolls automatically |
 | Add a cluster | import it into ACM with `vendor=OpenShift` — nothing else. No Terraform, no AWS, no commit |
 | Operator version | in `policy-falcon-operator.yaml`, change `versions[0]` **and** `subscription.startingCSV` in one commit; `./scripts/validate.sh` fails if they disagree |
-| Add KAC / IAR | uncomment in `acm/base/policyset.yaml` and `acm/kustomization.yaml`; widen API scopes first for IAR |
+| Add KAC / IAR | uncomment in `acm/03-sensors/placement.yaml` (PolicySet) and `acm/03-sensors/kustomization.yaml`; widen API scopes first for IAR |
 | Pause enforcement | set `spec.remediationAction: inform` on the Policy — it reports drift without correcting it |
 
 **Removing a policy does not uninstall the sensor.** Every

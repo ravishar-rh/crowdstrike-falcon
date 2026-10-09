@@ -1,0 +1,25 @@
+---
+# Shared scaffolding for every Falcon phase. Lives in phase 1 because
+# phase 1 is always deployed first -- phases 2 and 3 assume these exist and
+# do not recreate them, so two Argo Applications never fight over the same
+# object.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: falcon-governance
+  labels:
+    app.kubernetes.io/part-of: crowdstrike-falcon
+---
+# Binds the "global" ManagedClusterSet into the governance namespace.
+#
+# The "global" set is created by MCE/ACM and selects *every* ManagedCluster,
+# including the hub's own "local-cluster". Without this binding the
+# Placements have no clusters to choose from and silently match zero
+# clusters -- no error, just nothing happening.
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSetBinding
+metadata:
+  name: global
+  namespace: falcon-governance
+spec:
+  clusterSet: global

@@ -13,10 +13,6 @@ note() { printf '\n== %s\n' "$*"; }
 bad()  { printf '  FAIL  %s\n' "$*"; fail=1; }
 ok()   { printf '  ok    %s\n' "$*"; }
 
-note "kustomize entrypoints"
-# Either path can be the Argo CD source, so both must build and both must
-# produce the same thing. A drifted root kustomization would silently change
-# what gets applied depending on which path the app-of-apps generator picked.
 if command -v kustomize >/dev/null; then
   kb() { kustomize build "$1" 2>&1; }
 elif command -v oc >/dev/null; then
@@ -25,20 +21,37 @@ else
   kb() { return 1; }
 fi
 
+PHASES=(acm/01-operator acm/02-credentials acm/03-sensors)
+
+note "each phase builds independently"
+# Every phase is deployed as its own Argo CD Application, so each must
+# render on its own -- a phase that only builds as part of a larger tree
+# would fail the moment it is pointed at directly.
 build=""
-if root_out="$(kb .)" && acm_out="$(kb acm/)"; then
-  ok "root builds ($(grep -c '^kind:' <<<"$root_out") objects)"
-  ok "acm/ builds ($(grep -c '^kind:' <<<"$acm_out") objects)"
-  if [[ "$root_out" == "$acm_out" ]]; then
-    ok "root and acm/ render identically"
-  else
-    bad "root and acm/ render DIFFERENT output -- Argo result would depend on the configured path"
-  fi
-  build="$root_out"
-elif command -v kustomize >/dev/null || command -v oc >/dev/null; then
-  bad "kustomize build failed:"; printf '%s\n' "${root_out:-}" "${acm_out:-}"
+if command -v kustomize >/dev/null || command -v oc >/dev/null; then
+  for p in "${PHASES[@]}"; do
+    if out="$(kb "$p")"; then
+      ok "$p ($(grep -c '^kind:' <<<"$out") objects)"
+      build+="$out"$'\n---\n'
+    else
+      bad "$p failed to build:"; printf '%s\n' "$out"
+    fi
+  done
 else
   echo "  skip  no kustomize or oc on PATH"
+fi
+
+note "root entrypoint is phase 1 only"
+# The whole point of the drop-in: pointing Argo at the repo root must
+# install the operator and nothing that needs a credential first.
+if root_out="$(kb .)" && p1_out="$(kb acm/01-operator)"; then
+  if [[ "$root_out" == "$p1_out" ]]; then
+    ok "root renders exactly acm/01-operator"
+  else
+    bad "root does NOT match acm/01-operator -- the zero-touch drop-in is broken"
+  fi
+else
+  echo "  skip  could not build"
 fi
 
 note "PolicySet membership matches the rendered policies"
@@ -51,15 +64,40 @@ if [[ -n "$build" ]] && command -v ruby >/dev/null; then
   printf '%s' "$build" | ruby -ryaml -e '
     docs = YAML.load_stream(STDIN.read).compact
     rendered = docs.select { |d| d["kind"] == "Policy" }.map { |d| d["metadata"]["name"] }.sort
-    set = docs.find { |d| d["kind"] == "PolicySet" }
-    abort("  FAIL  no PolicySet rendered") unless set
-    members = (set["spec"]["policies"] || []).sort
-    missing = members - rendered
-    orphan  = rendered - members
+    sets = docs.select { |d| d["kind"] == "PolicySet" }
+    abort("  FAIL  no PolicySet rendered") if sets.empty?
+    members = sets.flat_map { |s| s["spec"]["policies"] || [] }.sort
     bad = false
-    missing.each { |n| puts "  FAIL  PolicySet lists #{n}, but no such Policy is rendered"; bad = true }
-    orphan.each  { |n| puts "  FAIL  Policy #{n} is rendered but not in the PolicySet -- it will be placed nowhere"; bad = true }
-    puts "  ok    #{members.size} policies, set and render agree" unless bad
+    (members - rendered).each { |n| puts "  FAIL  a PolicySet lists #{n}, but no such Policy is rendered"; bad = true }
+    (rendered - members).each { |n| puts "  FAIL  Policy #{n} is rendered but in no PolicySet -- it will be placed nowhere"; bad = true }
+    puts "  ok    #{members.size} policies across #{sets.size} sets, all accounted for" unless bad
+    exit(bad ? 1 : 0)
+  ' || fail=1
+else
+  echo "  skip  nothing rendered, or ruby not on PATH"
+fi
+
+note "PlacementBinding subjects resolve"
+# A binding naming a PolicySet that does not exist places nothing, silently.
+if [[ -n "$build" ]] && command -v ruby >/dev/null; then
+  printf '%s' "$build" | ruby -ryaml -e '
+    docs = YAML.load_stream(STDIN.read).compact
+    sets       = docs.select { |d| d["kind"] == "PolicySet" }.map { |d| d["metadata"]["name"] }
+    placements = docs.select { |d| d["kind"] == "Placement"  }.map { |d| d["metadata"]["name"] }
+    bad = false
+    docs.select { |d| d["kind"] == "PlacementBinding" }.each do |b|
+      ref = b["placementRef"]["name"]
+      unless placements.include?(ref)
+        puts "  FAIL  binding #{b["metadata"]["name"]} references missing Placement #{ref}"; bad = true
+      end
+      (b["subjects"] || []).each do |s|
+        next unless s["kind"] == "PolicySet"
+        unless sets.include?(s["name"])
+          puts "  FAIL  binding #{b["metadata"]["name"]} references missing PolicySet #{s["name"]}"; bad = true
+        end
+      end
+    end
+    puts "  ok    all bindings resolve" unless bad
     exit(bad ? 1 : 0)
   ' || fail=1
 else
@@ -148,7 +186,7 @@ else
   echo "  skip  terraform not on PATH"
 fi
 
-note "acm/hub/external-secrets.yaml matches AWS"
+note "acm/02-credentials/external-secrets.yaml matches AWS"
 # The manifest is hand-written so its comments survive review; this is what
 # stops it drifting from what Terraform actually built. Silent no-op when
 # there is no state yet (fresh clone, or CI without AWS credentials).
@@ -156,7 +194,7 @@ if command -v terraform >/dev/null \
    && tf_json="$(terraform -chdir=terraform output -json hub_secret_store_values 2>/dev/null)" \
    && [[ -n "$tf_json" && "$tf_json" != "null" ]]; then
   if command -v jq >/dev/null; then
-    manifest="acm/hub/external-secrets.yaml"
+    manifest="acm/02-credentials/external-secrets.yaml"
     drift=0
     check() { # key, expected, grep-pattern
       local want; want="$(jq -r ".$1" <<<"$tf_json")"

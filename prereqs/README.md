@@ -13,9 +13,24 @@ both are the kind of thing a platform team usually sets up once.
 
 `openshift-gitops-acm-rbac.yaml`
 
-Out of the box the Argo CD application controller cannot create `Policy`,
-`PolicySet`, `PlacementBinding`, `Placement` or `ManagedClusterSetBinding`.
-Without this the sync fails with:
+**Check first — many app-of-apps setups already have this:**
+
+```bash
+oc auth can-i create policies.policy.open-cluster-management.io -A \
+  --as system:serviceaccount:openshift-gitops:openshift-gitops-argocd-application-controller
+```
+
+`yes` → skip this section. `no` → read on.
+
+The default `openshift-gitops` instance is **not** cluster-admin. The
+operator grants it a fixed set of cluster-scoped permissions that does not
+include ACM governance CRDs, so unless someone has already widened it (with
+`oc adm policy add-cluster-role-to-user cluster-admin -z ...`, an
+`ARGOCD_CLUSTER_CONFIG_NAMESPACES` setup, or a custom role), the application
+controller cannot create `Policy`, `PolicySet`, `PlacementBinding`,
+`Placement` or `ManagedClusterSetBinding`.
+
+Without it the sync fails with:
 
 ```
 policies.policy.open-cluster-management.io is forbidden:
@@ -84,15 +99,30 @@ it with whoever owns the instance rather than applying it unilaterally.
 Whatever your app-of-apps generator produces, these are the only settings
 that matter for this repo:
 
+One Application per phase, each pointing at its own path:
+
+| Phase | `path` |
+|---|---|
+| 1 — operator | repo root, or `acm/01-operator` |
+| 2 — credentials | `acm/02-credentials` |
+| 3 — sensors | `acm/03-sensors` |
+
+Settings that matter, the same for all three:
+
 | Setting | Value | Why |
 |---|---|---|
-| `path` | the repo root, or `acm` | both carry a `kustomization.yaml` and render identically |
 | `destination.server` | the hub (`https://kubernetes.default.svc`) | Argo only ever writes to the hub; ACM fans out to the spokes |
 | `destination.namespace` | `falcon-governance` | |
 | `syncPolicy.automated.prune` | safe to enable | removing a Policy from Git removes it from the hub, but never uninstalls the sensor — every ConfigurationPolicy sets `pruneObjectBehavior: None` |
 
+Do **not** point an Application at a parent directory with `recurse: true`.
+That bypasses the per-phase kustomizations and applies every phase at once,
+including credential manifests that still hold placeholder values.
+
 Argo needs no credentials for managed clusters. It writes `Policy` objects to
 the hub and ACM does the distribution.
 
-The namespace `falcon-governance` is created by `acm/base/namespace.yaml`, so
-`CreateNamespace=true` is not required.
+The namespace `falcon-governance` is created by phase 1
+(`acm/01-operator/governance.yaml`), so `CreateNamespace=true` is not
+required. Phases 2 and 3 rely on phase 1 having created it, and on the
+`global` ManagedClusterSetBinding from the same file — deploy phase 1 first.

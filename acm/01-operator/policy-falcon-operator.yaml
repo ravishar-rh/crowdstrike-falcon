@@ -32,20 +32,20 @@ spec:
   remediationAction: enforce
   policy-templates:
     # ---------------------------------------------------------------
-    # 1. Namespaces
+    # 1. Operator namespace
     # ---------------------------------------------------------------
-    # OperatorPolicy does not create the namespaces, and the sensor namespace
-    # needs Pod Security labels regardless.
+    # OperatorPolicy does not create it. The sensor namespace
+    # (falcon-system) belongs to phase 3, where it is actually used.
     - objectDefinition:
         apiVersion: policy.open-cluster-management.io/v1
         kind: ConfigurationPolicy
         metadata:
-          name: falcon-operator-namespaces
+          name: falcon-operator-namespace
         spec:
           remediationAction: enforce
           severity: high
-          # Never let policy removal delete these namespaces -- that would
-          # take the sensor off every node.
+          # Never let policy removal delete the namespace -- that would
+          # uninstall the operator from every cluster at once.
           pruneObjectBehavior: None
           object-templates:
             - complianceType: musthave
@@ -57,24 +57,6 @@ spec:
                   labels:
                     app.kubernetes.io/part-of: crowdstrike-falcon
                     openshift.io/cluster-monitoring: "true"
-            # The sensor namespace is pre-created here rather than left to the
-            # operator. The operator creates it with no labels at all, and the
-            # node sensor needs the privileged Pod Security profile. Creating
-            # it up front with the labels set -- and with label sync disabled
-            # so OpenShift does not overwrite them -- makes the outcome
-            # deterministic instead of depending on SCC-to-PSA autosync timing.
-            - complianceType: musthave
-              objectDefinition:
-                apiVersion: v1
-                kind: Namespace
-                metadata:
-                  name: falcon-system
-                  labels:
-                    app.kubernetes.io/part-of: crowdstrike-falcon
-                    pod-security.kubernetes.io/enforce: privileged
-                    pod-security.kubernetes.io/audit: privileged
-                    pod-security.kubernetes.io/warn: privileged
-                    security.openshift.io/scc.podSecurityLabelSync: "false"
 
     # ---------------------------------------------------------------
     # 2. The operator itself

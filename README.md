@@ -30,35 +30,57 @@ Everything here was checked against the `v1.15.0` tag of
 ## Layout
 
 ```
-kustomization.yaml   root kustomize entrypoint -- THIS is the Argo CD source path
+kustomization.yaml       root entrypoint -- renders PHASE 1 ONLY
 acm/
-  base/              namespace, ManagedClusterSetBinding, Placement, PlacementBinding, PolicySet
-  hub/               ESO ClusterSecretStore + ExternalSecret -- hub-local, not a policy
-  policies/          the three policies that make up the default stack
-    optional/        KAC and Image Analyzer, off by default
-  kustomization.yaml
-prereqs/             hub RBAC that must exist before the first sync -- NOT synced
-terraform/           Secrets Manager secret, CMK, one IRSA role for the hub's ESO
-scripts/             bw-to-aws.sh (Bitwarden -> AWS), validate.sh (pre-commit checks)
+  01-operator/           the operator. Zero-touch, no prerequisites
+  02-credentials/        Falcon API credentials via ESO + AWS. Needs Terraform first
+  03-sensors/            FalconNodeSensor + tags. Needs phase 2
+    optional/            KAC and Image Analyzer, off by default
+prereqs/                 hub RBAC that must exist before the first sync -- NOT synced
+terraform/               Secrets Manager secret, CMK, one IRSA role for the hub's ESO
+scripts/                 bw-to-aws.sh (Bitwarden -> AWS), validate.sh (pre-commit checks)
 docs/
 ```
 
-## Dropping this into an app-of-apps repo
+## Deploying in phases
 
 There is no `Application` manifest here — your app-of-apps generator makes
-it. Point it at **the repo root or `acm/`**; both carry a `kustomization.yaml`
-and render byte-identical output.
+it. Each phase is a separate, independently syncable directory, so the
+operator is up and running before you deal with credentials.
 
-The root `kustomization.yaml` is load bearing. Without it Argo falls back to
-plain directory mode, and with `recurse: true` that would sweep up
-`acm/policies/optional/` and apply the KAC and Image Analyzer policies that
-are meant to be opt-in. With it, nothing is applied unless listed as a
-resource — so `terraform/`, `scripts/`, `docs/` and `prereqs/` can never
-reach a cluster.
+| Phase | Argo source path | Prerequisites | Result |
+|---|---|---|---|
+| **1** | repo root (or `acm/01-operator`) | **none** | operator v1.15.0 installed fleet-wide |
+| 2 | `acm/02-credentials` | Terraform + AWS + ESO on hub | Falcon API credentials on every cluster |
+| 3 | `acm/03-sensors` | phase 2 | sensor DaemonSet with per-cluster tags |
 
-Read [prereqs/README.md](prereqs/README.md) before the first sync: Argo CD
-cannot create ACM `Policy` objects without an RBAC grant, and an Application
-cannot grant itself the permissions it needs to sync.
+**Phase 1 is the drop-in.** Add your gate file, point the Application at the
+repo root, and the operator installs on `local-cluster` and every managed
+OpenShift cluster. Nothing to fill in — no AWS, no credentials, no `oc`
+commands. The operator sits idle but running, ready for phase 2.
+
+Add phases 2 and 3 later as their own Applications pointing at their own
+directories. Each declares an ACM `spec.dependencies` on the phase before
+it, so applying one early makes it report `Pending` rather than fail.
+
+The root `kustomization.yaml` deliberately renders *only* phase 1. Without a
+kustomization at the path root Argo falls back to directory mode, and
+`recurse: true` would sweep up every phase at once — including credential
+manifests still holding placeholder values.
+
+**One real prerequisite.** Argo CD cannot create ACM `Policy` objects
+without an RBAC grant, and an Application cannot grant itself the
+permissions it needs to sync. The default `openshift-gitops` instance is
+*not* cluster-admin, so this is not automatic — though most established
+app-of-apps setups already have it. One command tells you:
+
+```bash
+oc auth can-i create policies.policy.open-cluster-management.io -A \
+  --as system:serviceaccount:openshift-gitops:openshift-gitops-argocd-application-controller
+```
+
+`yes` means you are done. `no` means apply
+[prereqs/openshift-gitops-acm-rbac.yaml](prereqs/openshift-gitops-acm-rbac.yaml).
 
 Argo CD only ever talks to the hub. It writes `Policy` objects; ACM does the
 fan-out. Argo needs no credentials for the spokes.
