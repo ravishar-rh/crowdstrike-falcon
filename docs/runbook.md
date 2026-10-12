@@ -153,10 +153,6 @@ your secret → Retrieve secret value → Edit**, replace both
 Terraform ignores changes to this value, so a later apply will not
 overwrite it.
 
-> `scripts/bw-to-aws.sh` does the same thing from a Bitwarden entry if you
-> would rather not paste into a browser. Optional — the console is the
-> supported path here.
-
 ---
 
 ## 2b. Deploy phase 2

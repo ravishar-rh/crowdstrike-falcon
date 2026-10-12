@@ -38,7 +38,7 @@ acm/
     optional/            KAC and Image Analyzer, off by default
 prereqs/                 hub RBAC that must exist before the first sync -- NOT synced
 terraform/               Secrets Manager secret, CMK, one IRSA role for the hub's ESO
-scripts/                 bw-to-aws.sh (Bitwarden -> AWS), validate.sh (pre-commit checks)
+scripts/                 validate.sh (pre-commit checks)
 docs/
 ```
 

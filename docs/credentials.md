@@ -133,13 +133,6 @@ summary.
 Terraform ignores changes to this value (`lifecycle.ignore_changes`), so a
 later apply will not overwrite it.
 
-> Optional alternative: `scripts/bw-to-aws.sh` writes the same payload
-> straight from a Bitwarden entry, if you would rather not paste a
-> credential into a browser. It passes the value to the AWS CLI through a
-> mode-0600 temp file on a cleaned-up trap, so it is never visible in `ps`.
-> Use `--dry-run` first — it prints lengths and a six-character prefix,
-> never values.
-
 ---
 
 ## 4. How the credential reaches managed clusters
@@ -184,8 +177,9 @@ re-propagates affected policies when that object changes
 watcher it maintains is logged as "dynamic watches for the hub policy
 templates"). So:
 
-1. Rotate the API client in the Falcon console; update the Bitwarden entry.
-2. Re-run `scripts/bw-to-aws.sh` — this creates a new `AWSCURRENT` version.
+1. Rotate the API client in the Falcon console.
+2. Edit the secret value in the Secrets Manager console — this creates a new
+   `AWSCURRENT` version.
 3. Within ESO's `refreshInterval` (1h) the hub Secret updates.
 4. ACM notices and re-renders the credentials policy to every cluster on its
    own.
