@@ -1,39 +1,29 @@
-# Copy to terraform.tfvars and edit. terraform.tfvars is gitignored.
+# Copy to terraform.tfvars for local runs. terraform.tfvars is gitignored.
+#
+# In GitHub Actions these come from repository variables instead -- see
+# .github/workflows/terraform.yml. Nothing here is secret: the Falcon client
+# ID and secret are typed into the AWS console by hand and never pass
+# through Terraform.
 
-aws_region  = "us-east-1"
+aws_region  = "eu-west-1"
 secret_name = "crowdstrike/falcon/api-credentials"
 
-# ---------------------------------------------------------------------------
-# The ACM hub -- the only cluster that talks to AWS.
+# The IAM role your existing External Secrets Operator assumes. Terraform
+# grants it read access through the secret's resource policy and does not
+# modify the role itself.
 #
-# External Secrets Operator runs here and nowhere else. Managed clusters get
-# the credential through an ACM hub template, so they need no entry here, no
-# IAM role, and no route to AWS. Adding a managed cluster later requires no
-# Terraform change at all.
+#   oc get clustersecretstore aws-secrets-manager \
+#     -o jsonpath='{.spec.provider.aws.role}{"\n"}'
 #
-#   oc get authentication cluster -o jsonpath='{.spec.serviceAccountIssuer}'
-# ---------------------------------------------------------------------------
-hub_oidc_issuer_url = "https://oidc.op1.openshiftapps.com/CHANGEME-HUB"
-
-# ROSA and most OCP-on-AWS installs already registered their issuer in IAM.
-# Set true only if `aws iam list-open-id-connect-providers` does not list it.
-# create_oidc_provider = false
-
-# Where the ESO controller ServiceAccount lives on the hub. The IAM trust
-# policy pins this exact subject -- a mismatch fails with
-# InvalidIdentityToken.
-# eso_namespace       = "external-secrets"
-# eso_service_account = "external-secrets"
-
-# Leave false. The credential is written by scripts/bw-to-aws.sh so it never
-# lands in Terraform state. See variables.tf for the tradeoff if you flip it.
-manage_secret_value = false
+# Leave empty only if that role already has GetSecretValue on a prefix
+# covering secret_name above -- and note create_kms_key must then be false,
+# because a CMK needs an explicit grant.
+eso_role_arns = ["arn:aws:iam::CHANGEME:role/CHANGEME-external-secrets"]
 
 create_kms_key = true
 
-# Only relevant for a DR hub in another region -- managed clusters never read
-# this secret directly.
-# replica_regions = ["us-west-2"]
+# Only for a DR hub in another region.
+# replica_regions = ["eu-central-1"]
 
 tags = {
   ManagedBy   = "terraform"

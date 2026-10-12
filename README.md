@@ -161,10 +161,24 @@ templates as resolve-once, refreshed only by a `trigger-update` annotation,
 describes OCM 0.9.x and earlier — not a 2.17 hub. The annotation still works
 as a manual lever.
 
-**Terraform does not hold the credential.** `manage_secret_value = false` by
-default: Terraform creates the secret with a placeholder and then ignores the
-value forever, so the real key never enters state and a later `apply` cannot
-clobber it. `scripts/bw-to-aws.sh` writes it from your Bitwarden entry.
+**This repo is public and contains no AWS identifiers.** The
+`aws-secrets-manager` ClusterSecretStore already exists, created by other
+automation, and carries the region, IAM role and account — so the
+ExternalSecret here names none of them. `scripts/validate.sh` fails if a
+real ARN ever appears under `acm/`.
+
+**Terraform never holds the credential.** It creates the secret with
+`REPLACE_IN_CONSOLE` placeholders and then ignores the value forever
+(`lifecycle.ignore_changes`). The client ID and secret are typed into the
+AWS console by hand, so nothing sensitive reaches Terraform state, a plan
+output, or a GitHub Actions log. Terraform runs in CI via OIDC, so there
+are no AWS keys in GitHub either.
+
+**Terraform creates no IAM role.** It grants your existing ESO role read
+access through the secret's resource policy and the KMS key policy, and
+never modifies the role. Within one account either side may authorise, so
+this is sufficient — and it keeps two automations from fighting over the
+same object.
 
 **`pruneObjectBehavior: None` everywhere.** Deleting a policy must not strip
 EDR off the fleet. Argo prunes hub-side Policy objects; the objects those

@@ -15,7 +15,7 @@
 #   ./scripts/bw-to-aws.sh \
 #     --bw-item 'CrowdStrike Falcon API' \
 #     --secret-id 'crowdstrike/falcon/api-credentials' \
-#     --region us-east-1
+#     --region eu-west-1
 #
 # Field resolution, in order:
 #   1. custom fields named by --id-field / --secret-field
@@ -24,7 +24,7 @@ set -euo pipefail
 
 BW_ITEM=""
 SECRET_ID=""
-REGION="${AWS_REGION:-us-east-1}"
+REGION="${AWS_REGION:-eu-west-1}"
 ID_FIELD="Client ID"
 SECRET_FIELD="Client Secret"
 DRY_RUN=false

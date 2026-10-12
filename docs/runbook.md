@@ -74,44 +74,77 @@ Stop here for as long as you like. Everything below is phase 2 and 3.
 
 # PHASE 2 — credentials
 
-Get the hub's OIDC issuer, the one input Terraform needs:
+Terraform creates the secret; you type the value in by hand. No Falcon
+credential ever touches Terraform, GitHub Actions, or this repository.
+
+## 2a. Find your ESO role
+
+The `aws-secrets-manager` ClusterSecretStore already exists, created by
+other automation. Terraform does not create a role or touch ESO — it only
+grants the role you already have read access to the new secret:
 
 ```bash
-oc get authentication cluster -o jsonpath='{.spec.serviceAccountIssuer}{"\n"}'
+oc get clustersecretstore aws-secrets-manager                                  # READY must be True
+oc get clustersecretstore aws-secrets-manager -o jsonpath='{.spec.provider.aws.role}{"\n"}'
 ```
 
-## 2a. AWS
+If that prints nothing, ESO is using its ServiceAccount's own identity —
+take the role from the SA annotation instead:
+
+```bash
+oc get sa -n <eso-namespace> <eso-sa> \
+  -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}{"\n"}'
+```
+
+## 2b. Create the secret
+
+Set these under **Settings → Secrets and variables → Actions → Variables**.
+None are secret — they are variables rather than committed values only so
+the public tree names no real infrastructure:
+
+| Variable | Example |
+|---|---|
+| `AWS_ROLE_ARN` | role the workflow assumes via OIDC |
+| `AWS_REGION` | `eu-west-1` |
+| `TF_STATE_BUCKET` | your existing state bucket |
+| `TF_STATE_REGION` | `eu-west-1` |
+| `ESO_ROLE_ARNS` | `["arn:aws:iam::123456789012:role/external-secrets"]` |
+
+`ESO_ROLE_ARNS` must be valid JSON — it is a list variable, and the
+workflow passes it through as `TF_VAR_eso_role_arns`.
+
+Then push to `main`, or run the **terraform** workflow manually. It plans on
+PRs (commenting the plan) and applies only on `main`.
+
+Locally instead:
 
 ```bash
 cd terraform
-cp terraform.tfvars.example terraform.tfvars
-$EDITOR terraform.tfvars          # hub_oidc_issuer_url is the only required value
-terraform init
-terraform plan
+cp terraform.tfvars.example terraform.tfvars    # gitignored
+$EDITOR terraform.tfvars                        # set eso_role_arns
+terraform init -backend-config="bucket=..." -backend-config="key=crowdstrike-falcon/terraform.tfstate" -backend-config="region=eu-west-1"
 terraform apply
 ```
 
-Then write the real credential — this is the step that keeps it out of state:
+## 2c. Set the credential by hand
 
-```bash
-export BW_SESSION="$(bw unlock --raw)"
-cd ..
-./scripts/bw-to-aws.sh \
-  --bw-item 'CrowdStrike Falcon API' \
-  --secret-id "$(terraform -chdir=terraform output -raw secret_name)" \
-  --region us-east-1
+The workflow summary prints a direct console link. In **Secrets Manager →
+your secret → Retrieve secret value → Edit**, replace both
+`REPLACE_IN_CONSOLE` placeholders, keeping the JSON keys exactly:
+
+```json
+{
+  "client_id":     "...",
+  "client_secret": "..."
+}
 ```
 
-Wire the hub manifest to what Terraform built:
+Terraform ignores changes to this value, so a later apply will not
+overwrite it.
 
-```bash
-terraform -chdir=terraform output hub_secret_store_values
-$EDITOR acm/02-credentials/external-secrets.yaml   # region, role, remoteRef.key
-./scripts/validate.sh                   # confirms the two now agree
-```
-
-Those values are a role ARN, a region and a secret *name* — identities and
-names, no credential material. Safe to commit.
+> `scripts/bw-to-aws.sh` does the same thing from a Bitwarden entry if you
+> would rather not paste into a browser. Optional — the console is the
+> supported path here.
 
 ---
 
@@ -141,7 +174,7 @@ Label your ManagedClusters **first**, or every sensor tags as
 `env/unlabeled`:
 
 ```bash
-oc label managedcluster <name> env=prod region=us-east-1 --overwrite
+oc label managedcluster <name> env=prod region=eu-west-1 --overwrite
 ```
 
 Review the tag list in `acm/03-sensors/policy-falcon-node-sensor.yaml`
@@ -245,14 +278,20 @@ conditions; that is the mechanism that decides when this happens.
 Almost always IAM. In order:
 `oc describe externalsecret falcon-api-credentials -n falcon-governance`,
 then `oc logs -n external-secrets deploy/external-secrets`.
-- `InvalidIdentityToken` / `AccessDenied` on `AssumeRoleWithWebIdentity` —
-  the role's `:sub` condition does not match the hub's ESO ServiceAccount, or
-  the hub's OIDC provider is not registered in IAM. Check `eso_namespace` and
-  `eso_service_account` against the real SA.
-- `AccessDeniedException` on `GetSecretValue` — the role is not in the
-  secret's resource policy, or the CMK policy denies it.
+- `AccessDeniedException` on `GetSecretValue` — the ESO role is not in the
+  secret's resource policy. Check `terraform output access_granted_to`
+  against the store's actual role:
+  `oc get clustersecretstore aws-secrets-manager -o jsonpath='{.spec.provider.aws.role}'`.
+  If they differ, fix `eso_role_arns` and re-apply.
+- `AccessDeniedException` mentioning **kms** — the CMK key policy does not
+  grant that role. Same cause, same fix.
 - `ResourceNotFoundException` — `remoteRef.key` does not match
-  `var.secret_name`. `./scripts/validate.sh` catches this.
+  `var.secret_name`, or the secret is in a different region from the one
+  the store points at. `./scripts/validate.sh` catches the name mismatch.
+- `InvalidIdentityToken` on `AssumeRoleWithWebIdentity` — a problem in the
+  pre-existing ClusterSecretStore, not in anything this repo owns. Other
+  ExternalSecrets on the hub will be failing too; check with
+  `oc get externalsecret -A`.
 
 **Secret present on the hub but not on managed clusters.**
 The hub template is failing. `oc describe policy falcon-credentials -n

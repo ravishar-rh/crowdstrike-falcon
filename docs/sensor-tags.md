@@ -110,7 +110,7 @@ with contain dots:
 | Source | Raw value | Legal? |
 |---|---|---|
 | ManagedCluster name | `prod-use1` | yes |
-| `region` label | `us-east-1` | yes |
+| `region` label | `eu-west-1` | yes |
 | `openshiftVersion-major-minor` label | `4.22` | **no** — dot |
 | `openshiftVersion` label | `4.22.3` | **no** — dots |
 | A team name with a space | `platform security` | **no** — space |
@@ -148,7 +148,7 @@ On the hub this renders to:
 
 ```yaml
 tags: [platform/openshift, managed-by/falcon-operator, cluster/local-cluster,
-       env/hub, region/us-east-1, ocp/4-22]
+       env/hub, region/eu-west-1, ocp/4-22]
 ```
 
 and on a spoke labelled `env=prod,region=eu-west-1`:

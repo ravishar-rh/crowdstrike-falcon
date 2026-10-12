@@ -2,11 +2,15 @@
 # PHASE 2 -- Falcon API credentials.
 #
 # NOT zero-touch. Before deploying this phase you must have:
-#   1. run terraform/ to create the AWS secret and the hub IAM role
-#   2. written the real credential with scripts/bw-to-aws.sh
-#   3. filled the three AWS values into external-secrets.yaml
-#      (terraform -chdir=terraform output hub_secret_store_values)
-#   4. External Secrets Operator running on the ACM hub
+#   1. run terraform/ (via the GitHub Actions workflow) to create the AWS
+#      secret and grant your existing ESO role read access
+#   2. typed the real client_id / client_secret into the Secrets Manager
+#      console, replacing the REPLACE_IN_CONSOLE placeholders
+#   3. confirmed the existing ClusterSecretStore is healthy:
+#      oc get clustersecretstore aws-secrets-manager   -> READY True
+#
+# Nothing in this directory needs editing: the store already carries the
+# region, role and account, so no AWS identifiers live in this repo.
 #
 # Deploy as its own Argo CD Application pointing at this directory.
 #

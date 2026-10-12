@@ -1,116 +1,63 @@
 variable "aws_region" {
-  description = "Region holding the Falcon API credentials secret."
+  description = "Region holding the Falcon API credentials secret. Must match the region your existing ClusterSecretStore points at."
   type        = string
-  default     = "us-east-1"
+  default     = "eu-west-1"
 }
 
 variable "secret_name" {
   description = <<-EOT
-    Name of the AWS Secrets Manager secret. Must match remoteRef.key in the
-    hub ExternalSecret -- Terraform renders that manifest for you via the
-    hub_external_secrets output, so the two stay in step automatically.
+    Name of the AWS Secrets Manager secret. Must match remoteRef.key in
+    acm/02-credentials/external-secrets.yaml -- scripts/validate.sh checks
+    that the two agree.
+
+    If your existing ESO role is scoped to a path prefix, name this secret
+    inside that prefix.
   EOT
   type        = string
   default     = "crowdstrike/falcon/api-credentials"
 }
 
-# ---------------------------------------------------------------------------
-# Hub cluster
-#
-# External Secrets Operator runs on the ACM hub and nowhere else, so exactly
-# one IAM role is created. Managed clusters receive the credential through an
-# ACM hub template and never touch AWS.
-# ---------------------------------------------------------------------------
-
-variable "hub_oidc_issuer_url" {
+variable "eso_role_arns" {
   description = <<-EOT
-    OIDC issuer of the ACM hub cluster, including the https:// prefix.
-      ROSA/HCP:  rosa describe cluster -c <name> -o json | jq -r .aws.sts.oidc_endpoint_url
-      Any OCP:   oc get authentication cluster -o jsonpath='{.spec.serviceAccountIssuer}'
+    ARNs of the IAM role(s) your existing External Secrets Operator assumes.
+    Terraform grants these read access to the new secret through the
+    secret's resource policy and the KMS key policy.
+
+    Nothing about your ESO installation is modified -- no role is created,
+    no policy is attached, no trust relationship is touched. Within a single
+    account a resource policy alone is sufficient to authorise access, so
+    this is the least intrusive way to let an externally-managed role read
+    a secret this stack owns.
+
+    Find it with:
+      oc get clustersecretstore aws-secrets-manager -o jsonpath='{.spec.provider.aws.role}'
+
+    If that is empty, ESO is using the controller ServiceAccount's own
+    identity; get the role from the SA annotation instead:
+      oc get sa -n <eso-namespace> <eso-sa> \
+        -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'
+
+    Leave empty ONLY if that role already has GetSecretValue on a prefix
+    covering var.secret_name.
   EOT
-  type        = string
+  type        = list(string)
+  default     = []
 
   validation {
-    condition     = startswith(var.hub_oidc_issuer_url, "https://")
-    error_message = "hub_oidc_issuer_url must start with https:// -- the IAM trust policy condition key is built from the host and path."
+    condition     = alltrue([for a in var.eso_role_arns : startswith(a, "arn:")])
+    error_message = "Each entry must be a full IAM role ARN, e.g. arn:aws:iam::123456789012:role/external-secrets."
   }
 }
-
-variable "create_oidc_provider" {
-  description = <<-EOT
-    Create the IAM OIDC provider for the hub. ROSA and most OCP-on-AWS
-    installs already have one, so this defaults to false and the existing
-    provider is looked up instead. Creating a duplicate fails with
-    EntityAlreadyExists, and owning it here would let a destroy take out all
-    of the cluster's other IRSA.
-  EOT
-  type        = bool
-  default     = false
-}
-
-variable "eso_namespace" {
-  description = <<-EOT
-    Namespace of the ESO controller ServiceAccount on the hub. Must match the
-    serviceAccountRef in the generated ClusterSecretStore -- the role's trust
-    policy pins this exact subject, so a mismatch fails with
-    InvalidIdentityToken.
-  EOT
-  type        = string
-  default     = "external-secrets"
-}
-
-variable "eso_service_account" {
-  description = "Name of the ESO controller ServiceAccount on the hub."
-  type        = string
-  default     = "external-secrets"
-}
-
-# ---------------------------------------------------------------------------
-# Secret value handling
-# ---------------------------------------------------------------------------
-
-variable "manage_secret_value" {
-  description = <<-EOT
-    Whether Terraform owns the credential value.
-
-    false (default and recommended): Terraform creates the secret with a
-    placeholder payload and then ignores the value forever. The real client ID
-    and secret are written out-of-band -- see scripts/bw-to-aws.sh, which
-    pipes them straight from your Bitwarden entry. Nothing sensitive ever
-    reaches Terraform state.
-
-    true: Terraform writes falcon_client_id/falcon_client_secret. Convenient,
-    but the plaintext credential is then stored in your state file and in
-    every plan output. Only do this with an encrypted remote backend and
-    restricted state access.
-  EOT
-  type        = bool
-  default     = false
-}
-
-variable "falcon_client_id" {
-  description = "Falcon API client ID. Only read when manage_secret_value = true."
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
-variable "falcon_client_secret" {
-  description = "Falcon API client secret. Only read when manage_secret_value = true."
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
-# ---------------------------------------------------------------------------
-# Encryption, replication, naming
-# ---------------------------------------------------------------------------
 
 variable "create_kms_key" {
   description = <<-EOT
     Create a customer-managed KMS key for the secret. The AWS-managed
     aws/secretsmanager key cannot carry a key policy, so with it you cannot
     prove in an audit which principals can decrypt the credential. A CMK can.
+
+    If you enable this, eso_role_arns must be populated -- a CMK requires an
+    explicit key policy grant, and unlike Secrets Manager there is no
+    "either side may allow" shortcut for KMS.
   EOT
   type        = bool
   default     = true
@@ -123,11 +70,7 @@ variable "kms_key_arn" {
 }
 
 variable "replica_regions" {
-  description = <<-EOT
-    Regions to replicate the secret into. Only the hub reads this secret, so
-    replication is about surviving a regional event rather than about cluster
-    locality. Leave empty unless you have a DR hub elsewhere.
-  EOT
+  description = "Regions to replicate the secret into. Only the hub reads it, so this is about surviving a regional event, not cluster locality."
   type        = list(string)
   default     = []
 }
@@ -139,20 +82,9 @@ variable "recovery_window_days" {
 }
 
 variable "name_prefix" {
-  description = "Prefix for IAM role, policy and KMS alias names."
+  description = "Prefix for the KMS alias."
   type        = string
-  default     = "falcon-eso"
-}
-
-variable "acm_policy_namespace" {
-  description = <<-EOT
-    Hub namespace holding the ACM policies, and therefore where the
-    ExternalSecret must create the Secret -- ACM resolves hub templates only
-    against objects in the Policy's own namespace. Must match
-    acm/base/namespace.yaml.
-  EOT
-  type        = string
-  default     = "falcon-governance"
+  default     = "falcon"
 }
 
 variable "tags" {

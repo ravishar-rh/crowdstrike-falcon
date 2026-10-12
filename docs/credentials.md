@@ -1,33 +1,47 @@
-# Credentials: Bitwarden → AWS Secrets Manager → clusters
+# Credentials: AWS Secrets Manager → clusters
 
 External Secrets Operator runs on the **ACM hub only**. Managed clusters never
 talk to AWS, hold no IAM identity, and do not need ESO installed.
 
 ```
-Bitwarden entry  ──(scripts/bw-to-aws.sh, once + on rotation)──▶  AWS Secrets Manager
-                                                                         │
-                       Terraform: secret, CMK, ONE IAM role,             │
-                       resource policy naming only that role             │
-                                                                         ▼
-                                              ESO on the ACM hub (IRSA, no static keys)
-                                                                         │
-                                                                         ▼
-                                        Secret falcon-api-credentials in falcon-governance
-                                                                         │
-                                        ACM Policy, {{hub fromSecret ... hub}}
-                                        (value auto-encrypted in transit)
-                                                                         │
-                        ┌────────────────────────────┼────────────────────────────┐
-                        ▼                            ▼                            ▼
-                  local-cluster               managed cluster A            managed cluster B
-            Secret in falcon-operator   Secret in falcon-operator   Secret in falcon-operator
-                        │                            │                            │
-                        ▼                            ▼                            ▼
-                            FalconNodeSensor spec.falconSecret.enabled: true
+        GitHub Actions ──terraform (OIDC, no AWS keys)──▶ secret + CMK, empty
+                                                                  │
+         YOU, by hand in the console ──client_id/client_secret──▶  │
+                                                                  ▼
+                                                        AWS Secrets Manager
+                                                                  │
+                            existing "aws-secrets-manager" ClusterSecretStore
+                                      (owned by other automation)
+                                                                  ▼
+                                                   ESO on the ACM hub
+                                                                  │
+                                                                  ▼
+                              Secret falcon-api-credentials in falcon-governance
+                                                                  │
+                              ACM Policy, {{hub fromSecret ... hub}}
+                              (value auto-encrypted in transit)
+                                                                  │
+               ┌──────────────────────────────┼──────────────────────────────┐
+               ▼                              ▼                              ▼
+         local-cluster                 managed cluster A              managed cluster B
+   Secret in falcon-operator     Secret in falcon-operator     Secret in falcon-operator
+               │                              │                              │
+               ▼                              ▼                              ▼
+                       FalconNodeSensor spec.falconSecret.enabled: true
 ```
 
-Exactly one principal in the AWS account can read the credential. Adding a
-managed cluster later needs no Terraform change at all.
+Two properties worth stating plainly, because they are what let this
+repository be public:
+
+- **The credential only ever exists in two places** — the Falcon console and
+  AWS Secrets Manager. It is typed in by hand. It is not in Git, not in
+  Terraform state, not in a plan output, not in a CI log.
+- **No AWS identifier appears in this repo.** The ClusterSecretStore already
+  exists and carries the region, role and account, so the ExternalSecret
+  names none of them. `scripts/validate.sh` fails the build if a real ARN
+  ever lands under `acm/`.
+
+Adding a managed cluster later needs no AWS change at all.
 
 ---
 
@@ -91,30 +105,40 @@ names are what the ACM policy templates read on the hub, so they appear in
 both `acm/02-credentials/external-secrets.yaml` and
 `acm/02-credentials/policy-falcon-credentials.yaml`.
 
-`scripts/validate.sh` compares the manifest against Terraform state when
-state is reachable, so a renamed secret or a rebuilt role fails locally
-rather than during an Argo sync.
+`scripts/validate.sh` compares the ExternalSecret's `remoteRef.key` against
+the `secret_name` default in `terraform/variables.tf`, so a rename on one
+side fails locally rather than as an ESO `ResourceNotFoundException`.
 
 ---
 
-## 3. Getting the credential out of Bitwarden
+## 3. Setting the credential
 
-```bash
-export BW_SESSION="$(bw unlock --raw)"
+By hand, once, in the AWS console. Terraform created the secret with
+placeholders; you replace them.
 
-./scripts/bw-to-aws.sh \
-  --bw-item 'CrowdStrike Falcon API' \
-  --secret-id 'crowdstrike/falcon/api-credentials' \
-  --region us-east-1
+**Secrets Manager → your secret → Retrieve secret value → Edit**, then
+replace both `REPLACE_IN_CONSOLE` values, keeping the JSON keys exactly as
+they are — they are what the ExternalSecret reads:
+
+```json
+{
+  "client_id":     "...",
+  "client_secret": "..."
+}
 ```
 
-The script reads custom fields named `Client ID` and `Client Secret`, falling
-back to `login.username` / `login.password`. Override with `--id-field` and
-`--secret-field`. Use `--dry-run` to confirm it is finding the right fields
-before writing — it prints lengths and a six-character prefix, never values.
+The terraform workflow prints a direct link to the secret in its run
+summary.
 
-The payload goes to the AWS CLI through a mode-0600 temp file on a cleaned-up
-trap, so it is never an argv element visible in `ps`.
+Terraform ignores changes to this value (`lifecycle.ignore_changes`), so a
+later apply will not overwrite it.
+
+> Optional alternative: `scripts/bw-to-aws.sh` writes the same payload
+> straight from a Bitwarden entry, if you would rather not paste a
+> credential into a browser. It passes the value to the AWS CLI through a
+> mode-0600 temp file on a cleaned-up trap, so it is never visible in `ps`.
+> Use `--dry-run` first — it prints lengths and a six-character prefix,
+> never values.
 
 ---
 
@@ -195,46 +219,58 @@ images; the running sensor authenticates with its own CID and AID.
 
 ## 6. ESO prerequisite (hub only)
 
-The hub needs External Secrets Operator with its controller ServiceAccount at
-`external-secrets/external-secrets`. Change `eso_namespace` /
-`eso_service_account` in `terraform.tfvars` and the `serviceAccountRef` in
-`acm/02-credentials/external-secrets.yaml` if yours differs — the IAM trust policy pins
-that exact ServiceAccount, so the two must agree or
-`AssumeRoleWithWebIdentity` fails with `InvalidIdentityToken`.
+The `aws-secrets-manager` ClusterSecretStore already exists on the hub,
+created by other automation and already syncing secrets for other
+workloads. This repo only consumes it — it ships no store of its own.
 
-Two things to check on an existing install:
+That is deliberate and it is what keeps a public repo clean: the region,
+the IAM role ARN and the AWS account ID all live in that store, so
+`acm/02-credentials/external-secrets.yaml` contains no AWS identifier at
+all. `scripts/validate.sh` enforces this — it fails if any real ARN appears
+under `acm/`.
 
-- **API version.** The manifests use `external-secrets.io/v1`, the current
-  stable version. On ESO older than v0.14, change the `apiVersion` on the
-  `ClusterSecretStore` and `ExternalSecret` to `external-secrets.io/v1beta1`.
-  Confirm with
-  `oc get crd externalsecrets.external-secrets.io -o jsonpath='{.spec.versions[*].name}'`.
-- **Token permission.** ESO's controller needs `create` on
-  `serviceaccounts/token` for the referenced ServiceAccount to mint the
-  projected token for `AssumeRoleWithWebIdentity`. The Helm chart and the
-  operator bundle both grant this by default.
+Before deploying phase 2:
+
+```bash
+oc get clustersecretstore aws-secrets-manager      # READY must be True
+```
+
+If yours is named differently, change `secretStoreRef.name` in
+`acm/02-credentials/external-secrets.yaml`.
+
+One thing to check on an older install: the manifest uses
+`external-secrets.io/v1`, the current stable version. On ESO older than
+v0.14 change it to `external-secrets.io/v1beta1`. Confirm with
+`oc get crd externalsecrets.external-secrets.io -o jsonpath='{.spec.versions[*].name}'`.
 
 ---
 
 ## 7. AWS side
 
-Terraform (`terraform/`) creates:
+Terraform (`terraform/`) creates only two things:
 
 - the Secrets Manager secret, optionally replicated to other regions;
 - a customer-managed KMS key — chosen over `aws/secretsmanager` because an
   AWS-managed key cannot carry a key policy, so you cannot demonstrate in an
-  audit which principals may decrypt the credential;
-- **one IAM role**, for the hub's ESO ServiceAccount, trusting only the hub's
-  OIDC issuer and only that exact subject;
-- an identity policy scoped to this one secret ARN (not `secretsmanager:*` on
-  `*`);
-- a resource policy on the secret naming only that role, so account-level IAM
-  reach alone is not enough to read it.
+  audit which principals may decrypt the credential.
 
-By default `manage_secret_value = false`: Terraform writes a `REPLACE_ME`
-placeholder once and then ignores the value forever
-(`lifecycle.ignore_changes`), so a later `terraform apply` cannot clobber the
-live credential and the real value never enters state.
+It grants your existing ESO role read access through the secret's
+**resource policy** and the KMS key policy. It creates no IAM role, no OIDC
+provider, and attaches nothing — the role stays wholly owned by whichever
+automation set up ESO. Within one account a request is authorised if either
+the identity policy or the resource policy allows it, so naming the role on
+the resource side is sufficient and avoids two Terraform stacks fighting
+over the same object.
+
+**The credential never passes through Terraform.** It writes
+`REPLACE_IN_CONSOLE` once and then ignores the value forever
+(`lifecycle.ignore_changes`). You type the real client ID and secret into
+the Secrets Manager console by hand. Nothing sensitive reaches Terraform
+state, a plan output, a tfvars file, or the GitHub Actions log — which is
+what makes the public repo and the CI pipeline safe.
+
+Terraform runs in GitHub Actions via OIDC, so there are no AWS keys in
+GitHub either. See [terraform/README.md](../terraform/README.md).
 
 ---
 

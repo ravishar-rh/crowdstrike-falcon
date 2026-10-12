@@ -225,31 +225,41 @@ else
   echo "  skip  terraform not on PATH"
 fi
 
-note "acm/02-credentials/external-secrets.yaml matches AWS"
-# The manifest is hand-written so its comments survive review; this is what
-# stops it drifting from what Terraform actually built. Silent no-op when
-# there is no state yet (fresh clone, or CI without AWS credentials).
-if command -v terraform >/dev/null \
-   && tf_json="$(terraform -chdir=terraform output -json hub_secret_store_values 2>/dev/null)" \
-   && [[ -n "$tf_json" && "$tf_json" != "null" ]]; then
-  if command -v jq >/dev/null; then
-    manifest="acm/02-credentials/external-secrets.yaml"
-    drift=0
-    check() { # key, expected, grep-pattern
-      local want; want="$(jq -r ".$1" <<<"$tf_json")"
-      grep -qF "$want" "$manifest" || { bad "$1: manifest does not contain '${want}'"; drift=1; }
-    }
-    check region
-    check role
-    check secretName
-    check esoNamespace
-    check esoServiceAccount
-    [[ $drift -eq 0 ]] && ok "manifest agrees with terraform state"
-  else
-    echo "  skip  jq not on PATH"
-  fi
+note "ExternalSecret remoteRef.key matches terraform secret_name"
+# If these drift, ESO reports ResourceNotFoundException and the whole
+# credential path stalls. Compared statically against the variable default,
+# so this works on a fresh clone with no AWS access and no state.
+if command -v ruby >/dev/null; then
+  ruby -e '
+    tf  = File.read("terraform/variables.tf")
+    blk = tf[/variable\s+"secret_name".*?\n}/m].to_s
+    want = blk[/default\s*=\s*"([^"]+)"/, 1]
+    es   = File.read("acm/02-credentials/external-secrets.yaml")
+    keys = es.scan(/^\s*key:\s*(\S+)/).flatten.uniq
+    if want.nil?
+      puts "  FAIL  could not read secret_name default from terraform/variables.tf"; exit 1
+    elsif keys.empty?
+      puts "  FAIL  no remoteRef.key found in the ExternalSecret"; exit 1
+    elsif keys == [want]
+      puts "  ok    both use #{want}"; exit 0
+    else
+      puts "  FAIL  terraform secret_name=#{want} but ExternalSecret uses #{keys.join(", ")}"; exit 1
+    end
+  ' || fail=1
 else
-  echo "  skip  no terraform state (run terraform apply first)"
+  echo "  skip  ruby not on PATH"
+fi
+
+note "public-repo hygiene: no AWS account identifiers in manifests"
+# This repo is public. The ClusterSecretStore is owned by other automation,
+# so no role ARN or account ID should ever appear in acm/ -- if one shows
+# up, someone has pasted real infrastructure detail into a public tree.
+hits="$(grep -rnoE "arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:[0-9]{12}:[^\"' ]*" acm/ 2>/dev/null \
+        | grep -v ':000000000000:' || true)"
+if [[ -n "$hits" ]]; then
+  bad "real AWS ARN committed under acm/:"; printf '        %s\n' $hits
+else
+  ok "no account IDs or role ARNs under acm/"
 fi
 
 echo

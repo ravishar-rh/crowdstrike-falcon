@@ -4,7 +4,7 @@ output "secret_arn" {
 }
 
 output "secret_name" {
-  description = "Name of the secret. This is the value ESO uses as remoteRef.key."
+  description = "Name of the secret. Must equal remoteRef.key in acm/02-credentials/external-secrets.yaml."
   value       = aws_secretsmanager_secret.falcon.name
 }
 
@@ -13,36 +13,35 @@ output "kms_key_arn" {
   value       = local.kms_key_arn
 }
 
-output "eso_role_arn" {
-  description = "IAM role the hub's External Secrets Operator assumes. The only principal that can read the secret."
-  value       = aws_iam_role.eso.arn
+output "access_granted_to" {
+  description = "IAM roles granted read access via the secret's resource policy. Empty means the existing ESO role is expected to already have prefix access."
+  value       = var.eso_role_arns
 }
 
-output "set_secret_command" {
-  description = "Copy-paste command to write the real credential without putting it in Terraform state."
+# Printed by the workflow so the one manual step is a click away.
+output "set_value_console_url" {
+  description = "Console link for typing in the real client ID and secret."
+  value = format(
+    "https://%s.console.aws.amazon.com/secretsmanager/secret?name=%s&region=%s",
+    var.aws_region,
+    urlencode(aws_secretsmanager_secret.falcon.name),
+    var.aws_region,
+  )
+}
+
+output "next_step" {
+  description = "What to do after apply."
   value       = <<-EOT
-    ./scripts/bw-to-aws.sh \
-      --bw-item '<bitwarden item name or id>' \
-      --secret-id '${aws_secretsmanager_secret.falcon.name}' \
-      --region '${var.aws_region}'
-  EOT
-}
+    Set the real credential by hand (Secrets Manager -> Retrieve secret value
+    -> Edit), replacing both REPLACE_IN_CONSOLE placeholders. Keep the JSON
+    keys exactly as they are -- they are what the ExternalSecret reads:
 
-# The AWS-side values that acm/hub/external-secrets.yaml must carry.
-#
-# That manifest is hand-written and committed rather than generated, because
-# generated YAML loses the inline comments that make it reviewable. To keep it
-# honest, scripts/validate.sh compares these values against the manifest
-# whenever Terraform state is reachable, so drift fails a local check instead
-# of failing an Argo sync.
-output "hub_secret_store_values" {
-  description = "Values that must match acm/hub/external-secrets.yaml."
-  value = {
-    region            = var.aws_region
-    role              = aws_iam_role.eso.arn
-    secretName        = aws_secretsmanager_secret.falcon.name
-    esoNamespace      = var.eso_namespace
-    esoServiceAccount = var.eso_service_account
-    externalSecretNS  = var.acm_policy_namespace
-  }
+      {
+        "client_id":     "...",
+        "client_secret": "..."
+      }
+
+    Terraform ignores changes to this value, so a later apply will not
+    overwrite it.
+  EOT
 }

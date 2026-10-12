@@ -2,10 +2,22 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 locals {
-  account_id = data.aws_caller_identity.current.account_id
-  partition  = data.aws_partition.current.partition
-
+  account_id  = data.aws_caller_identity.current.account_id
+  partition   = data.aws_partition.current.partition
   kms_key_arn = var.create_kms_key ? aws_kms_key.falcon[0].arn : var.kms_key_arn
+
+  grant_access = length(var.eso_role_arns) > 0
+}
+
+# A CMK with no principal allowed to decrypt is a secret nobody can read.
+# Fail at plan time rather than leaving ESO to report SecretSyncedError.
+resource "terraform_data" "validate_kms_grant" {
+  lifecycle {
+    precondition {
+      condition     = !var.create_kms_key || local.grant_access
+      error_message = "create_kms_key = true requires eso_role_arns to be set: a customer-managed key needs an explicit key policy grant, and unlike Secrets Manager there is no 'either side may allow' evaluation for KMS."
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -18,47 +30,40 @@ resource "aws_kms_key" "falcon" {
   enable_key_rotation     = true
   deletion_window_in_days = 30
 
-  # The key policy is the real access control. The IAM policies attached to
-  # the ESO roles grant kms:Decrypt, but a CMK also requires the key policy to
-  # allow it -- both sides must agree, which is exactly the property that
-  # makes a CMK auditable here.
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Sid       = "AllowAccountAdministration"
-        Effect    = "Allow"
-        Principal = { AWS = "arn:${local.partition}:iam::${local.account_id}:root" }
-        Action    = "kms:*"
-        Resource  = "*"
-      },
-      {
-        Sid       = "AllowSecretsManagerService"
-        Effect    = "Allow"
-        Principal = { Service = "secretsmanager.amazonaws.com" }
-        Action = [
-          "kms:Decrypt",
-          "kms:GenerateDataKey*",
-          "kms:DescribeKey",
-        ]
-        Resource = "*"
-      },
-      {
-        Sid       = "AllowHubEsoRoleToDecrypt"
-        Effect    = "Allow"
-        Principal = { AWS = aws_iam_role.eso.arn }
-        Action = [
-          "kms:Decrypt",
-          "kms:DescribeKey",
-        ]
-        Resource = "*"
-        Condition = {
-          StringEquals = {
-            "kms:ViaService" = "secretsmanager.${var.aws_region}.amazonaws.com"
+    Statement = concat(
+      [
+        {
+          Sid       = "AllowAccountAdministration"
+          Effect    = "Allow"
+          Principal = { AWS = "arn:${local.partition}:iam::${local.account_id}:root" }
+          Action    = "kms:*"
+          Resource  = "*"
+        },
+        {
+          Sid       = "AllowSecretsManagerService"
+          Effect    = "Allow"
+          Principal = { Service = "secretsmanager.amazonaws.com" }
+          Action    = ["kms:Decrypt", "kms:GenerateDataKey*", "kms:DescribeKey"]
+          Resource  = "*"
+        },
+      ],
+      local.grant_access ? [
+        {
+          Sid       = "AllowExternalSecretsOperatorToDecrypt"
+          Effect    = "Allow"
+          Principal = { AWS = var.eso_role_arns }
+          Action    = ["kms:Decrypt", "kms:DescribeKey"]
+          Resource  = "*"
+          Condition = {
+            StringEquals = {
+              "kms:ViaService" = "secretsmanager.${var.aws_region}.amazonaws.com"
+            }
           }
-        }
-      },
-    ]
+        },
+      ] : [],
+    )
   })
 
   tags = merge(var.tags, { Name = "${var.name_prefix}-credentials" })
@@ -76,7 +81,7 @@ resource "aws_kms_alias" "falcon" {
 # ---------------------------------------------------------------------------
 resource "aws_secretsmanager_secret" "falcon" {
   name        = var.secret_name
-  description = "CrowdStrike Falcon API client credentials consumed by falcon-operator via External Secrets Operator"
+  description = "CrowdStrike Falcon API client credentials. Value is set by hand in the console -- Terraform never manages it."
   kms_key_id  = local.kms_key_arn != "" ? local.kms_key_arn : null
 
   recovery_window_in_days = var.recovery_window_days
@@ -91,53 +96,49 @@ resource "aws_secretsmanager_secret" "falcon" {
   tags = merge(var.tags, { Name = var.secret_name })
 }
 
-# Bootstrap payload. Created once so the JSON shape exists and ESO has
-# something well-formed to read, then never touched again -- the real
-# credential is written by scripts/bw-to-aws.sh.
+# Bootstrap payload only.
+#
+# Terraform creates the JSON shape once so ESO has something well-formed to
+# read, then never touches the value again. The real client ID and secret are
+# typed into the Secrets Manager console by hand.
+#
+# This is why no Falcon credential ever reaches Terraform state, a tfvars
+# file, a plan output, or GitHub Actions logs -- which is what lets this
+# repository be public.
 resource "aws_secretsmanager_secret_version" "bootstrap" {
-  count = var.manage_secret_value ? 0 : 1
-
   secret_id = aws_secretsmanager_secret.falcon.id
+
   secret_string = jsonencode({
-    client_id     = "REPLACE_ME"
-    client_secret = "REPLACE_ME"
+    client_id     = "REPLACE_IN_CONSOLE"
+    client_secret = "REPLACE_IN_CONSOLE"
   })
 
   lifecycle {
-    # Without this, every apply after the credential is set would revert it to
-    # REPLACE_ME and break the sensor fleet's ability to pull its image.
+    # Without this, the next apply would overwrite the real credential with
+    # the placeholder and break image pulls fleet-wide.
     ignore_changes = [secret_string]
   }
 }
 
-resource "aws_secretsmanager_secret_version" "managed" {
-  count = var.manage_secret_value ? 1 : 0
-
-  secret_id = aws_secretsmanager_secret.falcon.id
-  secret_string = jsonencode({
-    client_id     = var.falcon_client_id
-    client_secret = var.falcon_client_secret
-  })
-}
-
-# Deny-by-default on the secret itself: only the hub's ESO role may read it.
-# IAM identity policies alone would let any sufficiently-privileged principal
-# in the account read the credential; this resource policy is the second lock.
+# Grants your existing ESO role read access without modifying that role.
+#
+# Within one account, a request is authorised if EITHER the identity policy
+# OR the resource policy allows it. So naming the role here is sufficient,
+# and this stack never has to touch a role owned by another automation.
 resource "aws_secretsmanager_secret_policy" "falcon" {
+  count = local.grant_access ? 1 : 0
+
   secret_arn = aws_secretsmanager_secret.falcon.arn
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid       = "AllowHubEsoRoleRead"
+        Sid       = "AllowExternalSecretsOperatorRead"
         Effect    = "Allow"
-        Principal = { AWS = aws_iam_role.eso.arn }
-        Action = [
-          "secretsmanager:GetSecretValue",
-          "secretsmanager:DescribeSecret",
-        ]
-        Resource = "*"
+        Principal = { AWS = var.eso_role_arns }
+        Action    = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+        Resource  = "*"
       },
       {
         Sid       = "AllowAccountAdministration"
