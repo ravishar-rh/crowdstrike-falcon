@@ -107,7 +107,7 @@ the public tree names no real infrastructure:
 | `AWS_ROLE_ARN` | role the workflow assumes via OIDC |
 | `AWS_REGION` | `eu-west-1` |
 | `TF_STATE_BUCKET` | your existing state bucket |
-| `TF_STATE_REGION` | `eu-west-1` |
+| `TF_STATE_REGION` | region of that bucket — **not** necessarily `AWS_REGION` |
 | `ESO_ROLE_ARNS` | `["arn:aws:iam::123456789012:role/external-secrets"]` |
 
 `ESO_ROLE_ARNS` must be valid JSON — it is a list variable, and the
@@ -122,9 +122,20 @@ Locally instead:
 cd terraform
 cp terraform.tfvars.example terraform.tfvars    # gitignored
 $EDITOR terraform.tfvars                        # set eso_role_arns
-terraform init -backend-config="bucket=..." -backend-config="key=crowdstrike-falcon/terraform.tfstate" -backend-config="region=eu-west-1"
+terraform init \
+  -backend-config="bucket=$TF_STATE_BUCKET" \
+  -backend-config="key=crowdstrike-falcon/terraform.tfstate" \
+  -backend-config="region=$TF_STATE_REGION"
 terraform apply
 ```
+
+Or keep those three lines in a gitignored `terraform/backend.hcl` and run
+`terraform init -backend-config=backend.hcl`.
+
+The state bucket's region is independent of `aws_region` — state can live
+in one region while the secret is created in another. Do not "fix" a
+mismatch by changing `aws_region`; that would move the secret away from the
+region your ClusterSecretStore reads.
 
 ## 2c. Set the credential by hand
 

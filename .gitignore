@@ -20,6 +20,14 @@ override.tf.json
 .terraformrc
 terraform.rc
 
+# Local backend config. Names a real S3 state bucket, which is
+# infrastructure detail that does not belong in a public repo -- CI passes
+# the same values via repository variables instead.
+backend.hcl
+*.backend.hcl
+backend.tfbackend
+*.tfbackend
+
 # Local credential scratch
 *.pem
 *.key
