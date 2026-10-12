@@ -77,6 +77,45 @@ else
   echo "  skip  nothing rendered, or ruby not on PATH"
 fi
 
+note "OperatorPolicy subscription fields are legal"
+# The controller decodes spec.subscription into an OLM SubscriptionSpec with
+# DisallowUnknownFields, then explicitly rejects installPlanApproval because
+# it derives that itself from upgradeApproval + versions. Both failures show
+# up only as a NonCompliant policy on the hub, so catch them here.
+if [[ -n "$build" ]] && command -v ruby >/dev/null; then
+  printf '%s' "$build" | ruby -ryaml -e '
+    # Valid SubscriptionSpec JSON tags, plus namespace which the controller
+    # strips before decoding. installPlanApproval is valid OLM but banned
+    # here, so it is listed to keep the dedicated message unduplicated.
+    allowed = %w[name namespace channel source sourceNamespace startingCSV config installPlanApproval]
+    bad = false
+    YAML.load_stream(STDIN.read).compact
+      .select { |d| d["kind"] == "Policy" }
+      .flat_map { |d| d["spec"]["policy-templates"].map { |t| t["objectDefinition"] } }
+      .select { |o| o["kind"] == "OperatorPolicy" }
+      .each do |op|
+        n   = op["metadata"]["name"]
+        sub = op["spec"]["subscription"] || {}
+        if sub.key?("installPlanApproval")
+          puts "  FAIL  #{n}: installPlanApproval is prohibited in spec.subscription"; bad = true
+        end
+        (sub.keys - allowed).each do |k|
+          puts "  FAIL  #{n}: unknown field spec.subscription.#{k}"; bad = true
+        end
+        %w[name namespace].each do |k|
+          unless sub[k].to_s != "" then puts "  FAIL  #{n}: #{k} is required in spec.subscription"; bad = true end
+        end
+        unless (op["spec"]["operatorGroup"] || {})["name"].to_s != ""
+          puts "  FAIL  #{n}: name is required in spec.operatorGroup"; bad = true
+        end
+        puts "  ok    #{n}: subscription and operatorGroup fields accepted" unless bad
+      end
+    exit(bad ? 1 : 0)
+  ' || fail=1
+else
+  echo "  skip  nothing rendered, or ruby not on PATH"
+fi
+
 note "PlacementBinding subjects resolve"
 # A binding naming a PolicySet that does not exist places nothing, silently.
 if [[ -n "$build" ]] && command -v ruby >/dev/null; then

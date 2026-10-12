@@ -112,6 +112,11 @@ Version pinning is real, and enforced by `OperatorPolicy`:
 | `upgradeApproval: None` | upgrade InstallPlans are never approved; the *initial* install still is, so day one needs no human |
 | `subscription.startingCSV` | the first InstallPlan targets 1.15.0 rather than the channel head |
 
+Note there is deliberately **no** `installPlanApproval` in `spec.subscription`
+— the controller rejects it (`installPlanApproval is prohibited in
+spec.subscription`) because it owns that field, deriving `Manual` from the
+two settings above.
+
 A newer CSV sits unapproved and visible in the ACM console. Moving version is
 a one-commit change to all three fields.
 

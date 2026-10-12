@@ -105,7 +105,15 @@ spec:
             source: certified-operators
             sourceNamespace: openshift-marketplace
             startingCSV: falcon-operator.v1.15.0
-            installPlanApproval: Manual
+            # DO NOT add installPlanApproval here. The controller rejects it
+            # outright -- "installPlanApproval is prohibited in
+            # spec.subscription" -- because it owns that field.
+            #
+            # It sets Manual by default, and only switches to Automatic when
+            # remediationAction is enforce AND upgradeApproval is Automatic
+            # AND versions is empty. With upgradeApproval: None and a pinned
+            # versions list we get Manual, which is what the pin needs.
+            # (config-policy-controller, operatorpolicy_controller.go:1051)
 
           # How operator conditions map to policy compliance.
           #
